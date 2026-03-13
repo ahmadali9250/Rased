@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'report_damage_screen.dart';
+import 'my_reports_screen.dart';
 
 // --- Mock Data Model ---
 class Pothole {
@@ -43,7 +44,24 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBodyBehindAppBar: true, // <-- Add this so the map stays full screen!
       backgroundColor: const Color(0xFF121212), // Deep dark background
+      appBar: AppBar(                 // <-- Add the AppBar right here
+        backgroundColor: Colors.transparent, 
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.list_alt, color: Colors.white, size: 30),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const MyReportsScreen()),
+              );
+            },
+          ),
+          const SizedBox(width: 10),
+        ],
+      ),
       body: Stack(
         children: [
           // 1. The Interactive Map
