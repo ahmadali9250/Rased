@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'report_damage_screen.dart';
 
 // --- Mock Data Model ---
 class Pothole {
@@ -182,8 +183,10 @@ class _MapScreenState extends State<MapScreen> {
         ),
         child: ElevatedButton.icon(
           onPressed: () {
-            // TODO: Navigate to Camera/Report Screen
-            debugPrint("Quick Detect Tapped");
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const ReportDamageScreen()),
+            );
           },
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFFFFD700), // Bold Yellow
