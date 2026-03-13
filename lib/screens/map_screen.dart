@@ -29,6 +29,8 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
   // Center of Amman, Jordan
   final LatLng _ammanCenter = const LatLng(31.9539, 35.9106);
 
@@ -44,24 +46,9 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      extendBodyBehindAppBar: true, // <-- Add this so the map stays full screen!
+      key: _scaffoldKey,
+      drawer: _buildDrawer(context),
       backgroundColor: const Color(0xFF121212), // Deep dark background
-      appBar: AppBar(                 // <-- Add the AppBar right here
-        backgroundColor: Colors.transparent, 
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.list_alt, color: Colors.white, size: 30),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const MyReportsScreen()),
-              );
-            },
-          ),
-          const SizedBox(width: 10),
-        ],
-      ),
       body: Stack(
         children: [
           // 1. The Interactive Map
@@ -168,11 +155,12 @@ class _MapScreenState extends State<MapScreen> {
                     letterSpacing: 1.2,
                   ),
                 ),
-                CircleAvatar(
-                  backgroundColor: Colors.white.withValues(alpha: 0.2),
-                  radius: 18,
-                  child: const Icon(Icons.person, color: Colors.white, size: 20),
-                ),
+                IconButton(
+                    icon: const Icon(Icons.menu, color: Colors.white, size: 28),
+                    onPressed: () {
+                      _scaffoldKey.currentState?.openDrawer();
+                    },
+                  ),
               ],
             ),
           ),
@@ -223,6 +211,60 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  // --- Sidebar Drawer Widget ---
+  Widget _buildDrawer(BuildContext context) {
+    return Drawer(
+      backgroundColor: const Color(0xFF121212), // Keep the dark theme
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          // The Header section of the sidebar
+          const UserAccountsDrawerHeader(
+            decoration: BoxDecoration(
+              color: Color(0xFF1A1A1A), // Slightly lighter dark for contrast
+            ),
+            accountName: Text(
+              'Ahmad Ali Alsayyed Ahmad', 
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)
+            ),
+            accountEmail: Text(
+              'Tareeqi User', 
+              style: TextStyle(color: Colors.white70)
+            ),
+            currentAccountPicture: CircleAvatar(
+              backgroundColor: Color(0xFFFFD700), // Yellow accent
+              child: Icon(Icons.person, size: 40, color: Color(0xFF121212)), // Dark icon
+            ),
+          ),
+          
+          // Button 1: My Profile
+          ListTile(
+            leading: const Icon(Icons.person_outline, color: Colors.white),
+            title: const Text('الملف الشخصي (My Profile)', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context); // Close the drawer first
+              // TODO: Navigate to Profile Screen when you build it!
+              debugPrint("Profile Clicked");
+            },
+          ),
+          
+          // Button 2: My Reports
+          ListTile(
+            leading: const Icon(Icons.list_alt, color: Colors.white),
+            title: const Text('بلاغاتي (My Reports)', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context); // Close the drawer first
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const MyReportsScreen()),
+              );
+            },
+          ),
+        ],
       ),
     );
   }
