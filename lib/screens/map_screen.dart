@@ -4,22 +4,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'report_damage_screen.dart';
 import 'my_reports_screen.dart';
-
-// --- Mock Data Model ---
-class Pothole {
-  final String id;
-  final LatLng location;
-  final int trafficVolume;
-
-  Pothole({required this.id, required this.location, required this.trafficVolume});
-
-  // Calculate severity color based on traffic volume
-  Color get severityColor {
-    if (trafficVolume > 500) return const Color(0xFFFF3B3B); // High: Red
-    if (trafficVolume > 150) return const Color(0xFFFF8800); // Medium: Orange
-    return const Color(0xFFFFD700); // Low: Yellow
-  }
-}
+import '../services/api_service.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -34,14 +19,24 @@ class _MapScreenState extends State<MapScreen> {
   // Center of Amman, Jordan
   final LatLng _ammanCenter = const LatLng(31.9539, 35.9106);
 
-  // Mock data representing AI-detected potholes
-  final List<Pothole> _potholes = [
-    Pothole(id: '1', location: const LatLng(31.958, 35.918), trafficVolume: 800), // Red
-    Pothole(id: '2', location: const LatLng(31.950, 35.905), trafficVolume: 300), // Orange
-    Pothole(id: '3', location: const LatLng(31.942, 35.915), trafficVolume: 50),  // Yellow
-    Pothole(id: '4', location: const LatLng(31.965, 35.925), trafficVolume: 600), // Red
-    Pothole(id: '5', location: const LatLng(31.935, 35.895), trafficVolume: 100), // Yellow
-  ];
+  // --- REAL API DATA ---
+  List<Hazard> _hazards = []; // Empty list to hold the live data
+  bool _isLoading = true; // Shows a loading spinner while we wait for the server
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchLiveHazards(); // Fetch data the moment the screen loads
+  }
+
+  // Talks to the API and updates the screen when finished
+  Future<void> _fetchLiveHazards() async {
+    final liveData = await ApiService.fetchHazards();
+    setState(() {
+      _hazards = liveData;
+      _isLoading = false; // Turn off the loading spinner
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -134,14 +129,14 @@ class _MapScreenState extends State<MapScreen> {
                 urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
                 subdomains: const ['a', 'b', 'c'],
               ),
-              // Pothole Markers
+              // Live API Markers
               MarkerLayer(
-                markers: _potholes.map((pothole) {
+                markers: _hazards.map((hazard) {
                   return Marker(
-                    point: pothole.location,
+                    point: hazard.location,
                     width: 70,
                     height: 70,
-                    child: _buildGlowingMarker(pothole.severityColor),
+                    child: _buildGlowingMarker(hazard.severityColor),
                   );
                 }).toList(),
               ),
@@ -150,6 +145,12 @@ class _MapScreenState extends State<MapScreen> {
 
           // 2. Glassmorphism Top Header
           _buildTopHeader(),
+
+          // 3. Loading Spinner (Only shows when _isLoading is true)
+          if (_isLoading)
+            const Center(
+              child: CircularProgressIndicator(color: Color(0xFFFFD700)),
+          ),
         ],
       ),
         
