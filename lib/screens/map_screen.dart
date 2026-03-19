@@ -6,6 +6,7 @@ import 'my_reports_screen.dart';
 import '../services/api_service.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
+import 'profile_screen.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -220,8 +221,8 @@ class _MapScreenState extends State<MapScreen> {
         // Index 2: Activity Placeholder
         const Center(child: Text('Notifications', style: TextStyle(color: Colors.white, fontSize: 24))),
 
-          // Index 3: Profile Placeholder
-          const Center(child: Text('Profile', style: TextStyle(color: Colors.white, fontSize: 24))),
+          // Index 3: Profile Screen
+          const ProfileScreen(),
         ],
       ),
     );
