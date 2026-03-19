@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:geocoding/geocoding.dart';
 import '../services/api_service.dart';
 
 class MyReportsScreen extends StatefulWidget {
@@ -10,18 +11,16 @@ class MyReportsScreen extends StatefulWidget {
 }
 
 class _MyReportsScreenState extends State<MyReportsScreen> {
-  List<Hazard> _myReports = []; // Holds the real data
-  bool _isLoading = true; // Shows the spinner while loading
+  List<Hazard> _myReports = []; 
+  bool _isLoading = true; 
 
   @override
   void initState() {
     super.initState();
-    _fetchMyReports(); // Fetch data the moment the screen opens
+    _fetchMyReports(); 
   }
 
   Future<void> _fetchMyReports() async {
-    // For now, we are just fetching all hazards. 
-    // Later, your friend can add a /Hazards/my endpoint!
     final liveData = await ApiService.fetchHazards();
     
     if (mounted) {
@@ -32,10 +31,27 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     }
   }
 
+  // --- Translates GPS to Street Names ---
+  Future<String> _getAddress(double lat, double lng) async {
+    try {
+      // Ask the internet what street this is!
+      List<Placemark> placemarks = await placemarkFromCoordinates(lat, lng);
+      if (placemarks.isNotEmpty) {
+        Placemark place = placemarks.first;
+        // Combines the street name and the city (e.g., "Mecca St, Amman")
+        return "${place.street}, ${place.locality}";
+      }
+    } catch (e) {
+      debugPrint("Could not find address: $e");
+    }
+    // If it fails, just return the raw numbers as a backup
+    return "${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}";
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF121212), // Deep dark background
+      backgroundColor: const Color(0xFF121212), 
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -47,7 +63,6 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
         centerTitle: true,
       ),
       
-      // If loading, show spinner. Otherwise, show the list!
       body: _isLoading 
         ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFD700)))
         : _myReports.isEmpty 
@@ -67,16 +82,9 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     );
   }
 
-  // --- Helper Widget for the Glassmorphism Card ---
   Widget _buildReportCard(Hazard report) {
-    // Check status based on your friend's database (Assuming 1=Pending, 2=Resolved)
     final bool isResolved = report.statusId == 2; 
-    
-    // Convert your friend's TypeID to a string
     final String typeName = report.typeId == 1 ? "Pothole" : "Hazard Type ${report.typeId}";
-
-    // Format the GPS coordinates for the card
-    final String locationText = "${report.location.latitude.toStringAsFixed(4)}, ${report.location.longitude.toStringAsFixed(4)}";
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(15),
@@ -92,28 +100,19 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Top Row: Type and Status Badge
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
                     typeName,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
                   ),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: isResolved
-                          ? Colors.green.withValues(alpha: 0.2)
-                          : const Color(0xFFFFD700).withValues(alpha: 0.2),
+                      color: isResolved ? Colors.green.withValues(alpha: 0.2) : const Color(0xFFFFD700).withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: isResolved ? Colors.green : const Color(0xFFFFD700),
-                      ),
+                      border: Border.all(color: isResolved ? Colors.green : const Color(0xFFFFD700)),
                     ),
                     child: Text(
                       isResolved ? 'Resolved' : 'Pending',
@@ -128,28 +127,40 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
               ),
               const SizedBox(height: 12),
               
-              // Location Row (Now shows real GPS coordinates!)
+              // --- The FutureBuilder for Location ---
               Row(
                 children: [
                   const Icon(Icons.location_on, color: Colors.white54, size: 16),
                   const SizedBox(width: 8),
-                  Text(
-                    locationText,
-                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  Expanded(
+                    child: FutureBuilder<String>(
+                      future: _getAddress(report.location.latitude, report.location.longitude),
+                      builder: (context, snapshot) {
+                        // While waiting for the internet...
+                        if (snapshot.connectionState == ConnectionState.waiting) {
+                          return const Text(
+                            "Translating GPS...", 
+                            style: TextStyle(color: Colors.white54, fontSize: 14, fontStyle: FontStyle.italic)
+                          );
+                        }
+                        // Once we have the street name!
+                        return Text(
+                          snapshot.data ?? "Location Unknown",
+                          style: const TextStyle(color: Colors.white70, fontSize: 14),
+                          overflow: TextOverflow.ellipsis, // Adds ... if the street name is too long!
+                        );
+                      },
+                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
               
-              // Date Row (We'll just put "Today" for now since the API didn't have a date field in the screenshot)
+              const SizedBox(height: 8),
               const Row(
                 children: [
                   Icon(Icons.calendar_today, color: Colors.white54, size: 16),
                   SizedBox(width: 8),
-                  Text(
-                    "Reported Today",
-                    style: TextStyle(color: Colors.white70, fontSize: 14),
-                  ),
+                  Text("Reported Today", style: TextStyle(color: Colors.white70, fontSize: 14)),
                 ],
               ),
             ],
