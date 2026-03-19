@@ -1,36 +1,39 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import '../services/api_service.dart';
 
-class MyReportsScreen extends StatelessWidget {
+class MyReportsScreen extends StatefulWidget {
   const MyReportsScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    // Mock data representing the user's past reports
-    final List<Map<String, dynamic>> reports = [
-      {
-        'type': 'Pothole',
-        'location': 'Amman, Queen Rania St.',
-        'date': '2026-03-12',
-        'status': 'Pending',
-        'isResolved': false,
-      },
-      {
-        'type': 'Faded Lines',
-        'location': 'Amman, Mecca St.',
-        'date': '2026-03-05',
-        'status': 'Resolved',
-        'isResolved': true,
-      },
-      {
-        'type': 'Crack',
-        'location': 'Amman, Abdullah Ghosheh St.',
-        'date': '2026-02-28',
-        'status': 'Resolved',
-        'isResolved': true,
-      },
-    ];
+  State<MyReportsScreen> createState() => _MyReportsScreenState();
+}
 
+class _MyReportsScreenState extends State<MyReportsScreen> {
+  List<Hazard> _myReports = []; // Holds the real data
+  bool _isLoading = true; // Shows the spinner while loading
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchMyReports(); // Fetch data the moment the screen opens
+  }
+
+  Future<void> _fetchMyReports() async {
+    // For now, we are just fetching all hazards. 
+    // Later, your friend can add a /Hazards/my endpoint!
+    final liveData = await ApiService.fetchHazards();
+    
+    if (mounted) {
+      setState(() {
+        _myReports = liveData;
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF121212), // Deep dark background
       appBar: AppBar(
@@ -43,24 +46,37 @@ class MyReportsScreen extends StatelessWidget {
         ),
         centerTitle: true,
       ),
-      body: ListView.builder(
-        physics: const BouncingScrollPhysics(),
-        padding: const EdgeInsets.all(20),
-        itemCount: reports.length,
-        itemBuilder: (context, index) {
-          final report = reports[index];
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 16),
-            child: _buildReportCard(report),
-          );
-        },
-      ),
+      
+      // If loading, show spinner. Otherwise, show the list!
+      body: _isLoading 
+        ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFD700)))
+        : _myReports.isEmpty 
+          ? const Center(child: Text("No reports yet!", style: TextStyle(color: Colors.white54)))
+          : ListView.builder(
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.all(20),
+              itemCount: _myReports.length,
+              itemBuilder: (context, index) {
+                final report = _myReports[index];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: _buildReportCard(report),
+                );
+              },
+            ),
     );
   }
 
   // --- Helper Widget for the Glassmorphism Card ---
-  Widget _buildReportCard(Map<String, dynamic> report) {
-    final bool isResolved = report['isResolved'];
+  Widget _buildReportCard(Hazard report) {
+    // Check status based on your friend's database (Assuming 1=Pending, 2=Resolved)
+    final bool isResolved = report.statusId == 2; 
+    
+    // Convert your friend's TypeID to a string
+    final String typeName = report.typeId == 1 ? "Pothole" : "Hazard Type ${report.typeId}";
+
+    // Format the GPS coordinates for the card
+    final String locationText = "${report.location.latitude.toStringAsFixed(4)}, ${report.location.longitude.toStringAsFixed(4)}";
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(15),
@@ -81,7 +97,7 @@ class MyReportsScreen extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    report['type'],
+                    typeName,
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
@@ -100,7 +116,7 @@ class MyReportsScreen extends StatelessWidget {
                       ),
                     ),
                     child: Text(
-                      report['status'],
+                      isResolved ? 'Resolved' : 'Pending',
                       style: TextStyle(
                         color: isResolved ? Colors.greenAccent : const Color(0xFFFFD700),
                         fontSize: 12,
@@ -112,27 +128,27 @@ class MyReportsScreen extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               
-              // Location Row
+              // Location Row (Now shows real GPS coordinates!)
               Row(
                 children: [
                   const Icon(Icons.location_on, color: Colors.white54, size: 16),
                   const SizedBox(width: 8),
                   Text(
-                    report['location'],
+                    locationText,
                     style: const TextStyle(color: Colors.white70, fontSize: 14),
                   ),
                 ],
               ),
               const SizedBox(height: 8),
               
-              // Date Row
-              Row(
+              // Date Row (We'll just put "Today" for now since the API didn't have a date field in the screenshot)
+              const Row(
                 children: [
-                  const Icon(Icons.calendar_today, color: Colors.white54, size: 16),
-                  const SizedBox(width: 8),
+                  Icon(Icons.calendar_today, color: Colors.white54, size: 16),
+                  SizedBox(width: 8),
                   Text(
-                    report['date'],
-                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                    "Reported Today",
+                    style: TextStyle(color: Colors.white70, fontSize: 14),
                   ),
                 ],
               ),
