@@ -5,6 +5,8 @@ import 'package:latlong2/latlong.dart';
 import 'report_damage_screen.dart';
 import 'my_reports_screen.dart';
 import '../services/api_service.dart';
+import 'dart:io';
+import 'package:image_picker/image_picker.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -50,11 +52,36 @@ class _MapScreenState extends State<MapScreen> {
         height: 80, 
         width: 80,
         child: FloatingActionButton(
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const ReportDamageScreen()),
-            );
+          onPressed: () async {
+            // 1. Open the Camera (or File Picker on Web)
+            final picker = ImagePicker();
+            final XFile? photo = await picker.pickImage(source: ImageSource.camera);
+
+            if (photo != null) {
+              // 2. Show a loading message at the bottom of the screen
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Uploading report...'), backgroundColor: Colors.orange),
+              );
+
+              // 3. Send the photo to the API!
+              bool success = await ApiService.submitReport(
+                photo: photo,
+                latitude: _ammanCenter.latitude,
+                longitude: _ammanCenter.longitude,
+              );
+
+              // 4. Show success/fail message and refresh the map
+              if (success) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('✅ Report submitted!'), backgroundColor: Colors.green),
+                );
+                _fetchLiveHazards(); // Reload the map to show the new pin!
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('❌ Failed to submit.'), backgroundColor: Colors.red),
+                );
+              }
+            }
           },
           backgroundColor: const Color(0xFFFFD700), // Tareeqi Yellow
           elevation: 4,

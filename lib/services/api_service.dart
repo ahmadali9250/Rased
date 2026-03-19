@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'dart:io';
+import 'package:image_picker/image_picker.dart';
 
 // --- 1. The Data Model (Matches your friend's HazardGetDto) ---
 class Hazard {
@@ -100,6 +102,48 @@ class ApiService {
     } catch (e) {
       debugPrint("❌ Internet error fetching hazards: $e");
       return [];
+    }
+  }
+
+  // C. Upload a new hazard report (Web & Mobile Safe!)
+  static Future<bool> submitReport({
+    required XFile photo, // Changed from File to XFile
+    required double latitude,
+    required double longitude,
+  }) async {
+    if (_token == null) await login();
+
+    try {
+      var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/Hazards/report'));
+      
+      request.headers['Authorization'] = 'Bearer $_token';
+      request.headers['Accept-Language'] = 'en';
+
+      request.fields['Latitude'] = latitude.toString();
+      request.fields['Longitude'] = longitude.toString();
+      request.fields['TypeId'] = '1'; 
+      request.fields['StatusID'] = '1'; 
+
+      // Read the file as bytes (This is the magic line that fixes it for the Web!)
+      final bytes = await photo.readAsBytes();
+      request.files.add(http.MultipartFile.fromBytes(
+        'Image', 
+        bytes, 
+        filename: photo.name,
+      ));
+
+      var response = await request.send();
+      
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        debugPrint("✅ Report sent successfully!");
+        return true;
+      }
+      
+      debugPrint("❌ Failed to send report: ${response.statusCode}");
+      return false;
+    } catch (e) {
+      debugPrint("❌ Internet error sending report: $e");
+      return false;
     }
   }
 }
