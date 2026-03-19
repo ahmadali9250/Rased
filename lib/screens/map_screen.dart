@@ -201,7 +201,7 @@ class _MapScreenState extends State<MapScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const Text(
-                  'Tareeqi | طريقي',
+                  'Rased | راصد',
                   style: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.bold,
