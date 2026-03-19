@@ -11,7 +11,7 @@ class TareeqiApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Tareeqi | طريقي',
+      title: 'Rased | راصد',
       debugShowCheckedModeBanner: false, // Removes the little "DEBUG" banner
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF121212),

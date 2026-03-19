@@ -9,7 +9,7 @@ class ReportDamageScreen extends StatefulWidget {
 }
 
 class _ReportDamageScreenState extends State<ReportDamageScreen> {
-  String _selectedDamageType = 'Pothole (ثقبة طريق)';
+  String _selectedDamageType = 'Pothole';
   final TextEditingController _descriptionController = TextEditingController();
 
   final List<String> _damageTypes = [

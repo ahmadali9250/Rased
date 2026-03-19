@@ -29,6 +29,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
+  int _selectedIndex = 0;
 
   // Center of Amman, Jordan
   final LatLng _ammanCenter = const LatLng(31.9539, 35.9106);
@@ -91,23 +92,36 @@ class _MapScreenState extends State<MapScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildBottomNavItem(Icons.map, 'Map', true, () {}),
-              _buildBottomNavItem(Icons.receipt_long, 'My Reports', false, () {
-                Navigator.push(context, MaterialPageRoute(builder: (context) => const MyReportsScreen()));
+              // 1. Map Button
+              _buildBottomNavItem(Icons.map, 'Map', _selectedIndex == 0, () {
+                setState(() => _selectedIndex = 0);
               }),
+              
+              // 2. My Reports Button (No more Navigator.push!)
+              _buildBottomNavItem(Icons.receipt_long, 'My Reports', _selectedIndex == 1, () {
+                setState(() => _selectedIndex = 1);
+              }),
+              
               const SizedBox(width: 48), // Empty space for the center yellow button!
-              _buildBottomNavItem(Icons.notifications_none, 'Notifications', false, () {
-                debugPrint("Activity Clicked");
+              
+              // 3. Notifications Button
+              _buildBottomNavItem(Icons.notifications_none, 'Notifications', _selectedIndex == 2, () {
+                setState(() => _selectedIndex = 2);
               }),
-              _buildBottomNavItem(Icons.person_outline, 'Profile', false, () {
-                debugPrint("Profile Clicked");
+              
+              // 4. Profile Button
+              _buildBottomNavItem(Icons.person_outline, 'Profile', _selectedIndex == 3, () {
+                setState(() => _selectedIndex = 3);
               }),
             ],
           ),
         ),
       ),
-      body: Stack(
+      body: IndexedStack(
+        index: _selectedIndex,
         children: [
+          Stack(
+            children: [
           // 1. The Interactive Map
           FlutterMap(
             options: MapOptions(
@@ -136,6 +150,17 @@ class _MapScreenState extends State<MapScreen> {
 
           // 2. Glassmorphism Top Header
           _buildTopHeader(),
+        ],
+      ),
+        
+        // Index 1: My Reports Screen
+        const MyReportsScreen(),
+
+        // Index 2: Activity Placeholder
+        const Center(child: Text('Notifications', style: TextStyle(color: Colors.white, fontSize: 24))),
+
+          // Index 3: Profile Placeholder
+          const Center(child: Text('Profile', style: TextStyle(color: Colors.white, fontSize: 24))),
         ],
       ),
     );
