@@ -2,11 +2,10 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-import 'report_damage_screen.dart';
 import 'my_reports_screen.dart';
 import '../services/api_service.dart';
-import 'dart:io';
 import 'package:image_picker/image_picker.dart';
+import 'package:geolocator/geolocator.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -40,6 +39,31 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
+  // --- GPS LOGIC ---
+  Future<Position> _determinePosition() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      return Future.error('Location services are disabled.');
+    }
+
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        return Future.error('Location permissions are denied');
+      }
+    }
+    
+    if (permission == LocationPermission.deniedForever) {
+      return Future.error('Location permissions are permanently denied.');
+    } 
+
+    return await Geolocator.getCurrentPosition();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -53,32 +77,41 @@ class _MapScreenState extends State<MapScreen> {
         width: 80,
         child: FloatingActionButton(
           onPressed: () async {
-            // 1. Open the Camera (or File Picker on Web)
             final picker = ImagePicker();
             final XFile? photo = await picker.pickImage(source: ImageSource.camera);
 
             if (photo != null) {
-              // 2. Show a loading message at the bottom of the screen
+              if (!context.mounted) return; // <-- Updated check!
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Uploading report...'), backgroundColor: Colors.orange),
+                const SnackBar(content: Text('Getting location & uploading...'), backgroundColor: Colors.orange),
               );
 
-              // 3. Send the photo to the API!
-              bool success = await ApiService.submitReport(
-                photo: photo,
-                latitude: _ammanCenter.latitude,
-                longitude: _ammanCenter.longitude,
-              );
+              try {
+                // 1. Get the REAL GPS location!
+                Position position = await _determinePosition();
 
-              // 4. Show success/fail message and refresh the map
-              if (success) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('✅ Report submitted!'), backgroundColor: Colors.green),
+                // 2. Send the photo with the REAL coordinates!
+                bool success = await ApiService.submitReport(
+                  photo: photo,
+                  latitude: position.latitude,     
+                  longitude: position.longitude,   
                 );
-                _fetchLiveHazards(); // Reload the map to show the new pin!
-              } else {
+
+                if (!context.mounted) return; // <-- Updated check!
+                if (success) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('✅ Report submitted at your location!'), backgroundColor: Colors.green),
+                  );
+                  _fetchLiveHazards(); // Reload the map
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('❌ Failed to submit.'), backgroundColor: Colors.red),
+                  );
+                }
+              } catch (e) {
+                if (!context.mounted) return; // <-- Updated check!
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('❌ Failed to submit.'), backgroundColor: Colors.red),
+                  SnackBar(content: Text('❌ Error: $e'), backgroundColor: Colors.red),
                 );
               }
             }
