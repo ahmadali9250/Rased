@@ -73,7 +73,9 @@ class _MapScreenState extends State<MapScreen> {
       
       // --- The Centered Floating Button ---
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-      floatingActionButton: SizedBox(
+      floatingActionButton: Transform.translate(
+      offset: const Offset(0, 20),
+      child: SizedBox(
         height: 80, 
         width: 80,
         child: FloatingActionButton(
@@ -137,6 +139,7 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ),
       ),
+    ),
 
       // --- The Notched Bottom Bar ---
       bottomNavigationBar: BottomAppBar(

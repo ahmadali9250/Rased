@@ -69,7 +69,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
           ? const Center(child: Text("No reports yet!", style: TextStyle(color: Colors.white54)))
           : ListView.builder(
               physics: const BouncingScrollPhysics(),
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.only(top: 20, left: 20, right: 20, bottom: 120),
               itemCount: _myReports.length,
               itemBuilder: (context, index) {
                 final report = _myReports[index];
