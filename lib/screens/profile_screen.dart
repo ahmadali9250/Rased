@@ -1,5 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import '../services/api_service.dart';
+import 'login_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -93,9 +95,23 @@ class ProfileScreen extends StatelessWidget {
                 height: 55,
                 child: ElevatedButton.icon(
                   onPressed: () {
-                    // Later we can clear the API token and go to a login screen!
+                    // 1. Clear the API token
+                    ApiService.logout();
+
+                    // 2. Actually KICK them back to the Login Screen!
+                    Navigator.pushAndRemoveUntil(
+                      context,
+                      MaterialPageRoute(builder: (context) => const LoginScreen()),
+                      (route) => false, 
+                    );
+
+                    // 3. Show the success message
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Logout clicked! (Coming soon)'), backgroundColor: Colors.orange),
+                      const SnackBar(
+                        content: Text('Successfully logged out!'), 
+                        backgroundColor: Colors.green,
+                        behavior: SnackBarBehavior.floating, 
+                      ),
                     );
                   },
                   style: ElevatedButton.styleFrom(

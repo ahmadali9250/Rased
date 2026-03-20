@@ -44,8 +44,14 @@ class ApiService {
   static const String baseUrl = 'https://tareeq-api.onrender.com/api';
   static String? _token; // Holds our secret key after logging in
 
+  // --- Log Out ---
+  static void logout() {
+    _token = null;
+    debugPrint("✅ User logged out. Token cleared.");
+  }
+
   // A. Log in to get the token
-  static Future<bool> login() async {
+  static Future<bool> login(String email, String password) async {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/Auth/login'),
@@ -54,8 +60,8 @@ class ApiService {
           'Accept-Language': 'en',
         },
         body: jsonEncode({
-          "email": "abed@user.com",
-          "passwordHashed": "1234"
+          "email": email,
+          "passwordHashed": password
         }),
       );
 
@@ -65,8 +71,10 @@ class ApiService {
         debugPrint("✅ Successfully logged in! Token saved.");
         return true;
       }
+      
       debugPrint("❌ Login failed: ${response.statusCode}");
-      return false;
+      return false; // Wrong password!
+      
     } catch (e) {
       debugPrint("❌ Internet error during login: $e");
       return false;
@@ -75,10 +83,10 @@ class ApiService {
 
   // B. Fetch all hazards for the map
   static Future<List<Hazard>> fetchHazards() async {
-    // If we don't have a token, try to log in first!
+    // If we don't have a token, we can't fetch data!
     if (_token == null) {
-      bool loggedIn = await login();
-      if (!loggedIn) return []; // Return empty list if login completely fails
+      debugPrint("❌ No token found. Please log in first.");
+      return [];
     }
 
     try {
@@ -110,7 +118,10 @@ class ApiService {
     required double latitude,
     required double longitude,
   }) async {
-    if (_token == null) await login();
+if (_token == null) {
+  debugPrint("❌ No token found. Cannot submit report.");
+  return false; 
+}
 
     try {
       var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/Hazards/report'));

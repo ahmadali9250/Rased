@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'screens/map_screen.dart'; // Import your new map screen!
+import 'screens/login_screen.dart';
 
 void main() {
   runApp(const TareeqiApp());
@@ -21,7 +21,7 @@ class TareeqiApp extends StatelessWidget {
         ),
       ),
       // This tells the app to open the MapScreen first!
-      home: const MapScreen(), 
+      home: const LoginScreen(), 
     );
   }
 }
