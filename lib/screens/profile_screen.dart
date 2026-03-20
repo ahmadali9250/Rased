@@ -51,16 +51,16 @@ class ProfileScreen extends StatelessWidget {
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
                     ),
-                    child: const Column(
+                    child: Column(
                       children: [
-                        Text(
+                        const Text(
                           "Abed",
                           style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
                         ),
-                        SizedBox(height: 8),
+                        const SizedBox(height: 8),
                         Text(
-                          "abed@user.com",
-                          style: TextStyle(color: Colors.white70, fontSize: 16),
+                          ApiService.loggedInEmail ?? "Unknown Email",
+                          style: const TextStyle(color: Colors.white70, fontSize: 16),
                         ),
                         SizedBox(height: 16),
                         Divider(color: Colors.white24),

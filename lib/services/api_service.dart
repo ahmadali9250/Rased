@@ -42,11 +42,13 @@ class Hazard {
 // --- 2. The API Service ---
 class ApiService {
   static const String baseUrl = 'https://tareeq-api.onrender.com/api';
-  static String? _token; // Holds our secret key after logging in
+  static String? _token;
+  static String? loggedInEmail;
 
   // --- Log Out ---
   static void logout() {
     _token = null;
+    loggedInEmail = null;
     debugPrint("✅ User logged out. Token cleared.");
   }
 
@@ -68,6 +70,7 @@ class ApiService {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         _token = data['token'];
+        loggedInEmail = email;
         debugPrint("✅ Successfully logged in! Token saved.");
         return true;
       }
