@@ -16,7 +16,7 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
     'Pothole',
     'Crack',
     'Faded Lines',
-    'Other'
+    'Other',
   ];
 
   @override
@@ -35,7 +35,11 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
         iconTheme: const IconThemeData(color: Colors.white),
         title: const Text(
           'Confirm Report',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 20,
+          ),
         ),
         centerTitle: true,
       ),
@@ -54,7 +58,10 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                 children: const [
                   Icon(Icons.location_on, color: Color(0xFFFFD700)),
                   SizedBox(width: 10),
-                  Text('Amman, Queen Rania St.', style: TextStyle(color: Colors.white70, fontSize: 16)),
+                  Text(
+                    'Amman, Queen Rania St.',
+                    style: TextStyle(color: Colors.white70, fontSize: 16),
+                  ),
                 ],
               ),
             ),
@@ -77,11 +84,17 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                   selectedColor: const Color(0xFFFFD700),
                   backgroundColor: Colors.white.withValues(alpha: 0.1),
                   labelStyle: TextStyle(
-                    color: isSelected ? const Color(0xFF121212) : Colors.white70,
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    color: isSelected
+                        ? const Color(0xFF121212)
+                        : Colors.white70,
+                    fontWeight: isSelected
+                        ? FontWeight.bold
+                        : FontWeight.normal,
                   ),
                   side: BorderSide(
-                    color: isSelected ? const Color(0xFFFFD700) : Colors.white.withValues(alpha: 0.2),
+                    color: isSelected
+                        ? const Color(0xFFFFD700)
+                        : Colors.white.withValues(alpha: 0.2),
                   ),
                 );
               }).toList(),
@@ -113,7 +126,9 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFFFFD700),
                   foregroundColor: const Color(0xFF121212),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(15),
+                  ),
                   elevation: 5,
                   shadowColor: const Color(0xFFFFD700).withValues(alpha: 0.5),
                 ),
@@ -133,7 +148,11 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
   Widget _buildSectionTitle(String title) {
     return Text(
       title,
-      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 16,
+        fontWeight: FontWeight.bold,
+      ),
     );
   }
 
@@ -153,12 +172,19 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.camera_alt_outlined, size: 50, color: Colors.white.withValues(alpha: 0.5)),
+              Icon(
+                Icons.camera_alt_outlined,
+                size: 50,
+                color: Colors.white.withValues(alpha: 0.5),
+              ),
               const SizedBox(height: 10),
               Text(
                 'AI Analysis Complete\nConfidence: 94%',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 14),
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.7),
+                  fontSize: 14,
+                ),
               ),
             ],
           ),

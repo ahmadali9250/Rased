@@ -12,7 +12,7 @@ class TareeqiApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Rased | راصد',
-      debugShowCheckedModeBanner: false, // Removes the little "DEBUG" banner
+      debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF121212),
         colorScheme: const ColorScheme.dark(
@@ -20,8 +20,7 @@ class TareeqiApp extends StatelessWidget {
           secondary: Color(0xFFFFD700),
         ),
       ),
-      // This tells the app to open the MapScreen first!
-      home: const LoginScreen(), 
+      home: const LoginScreen(),
     );
   }
 }

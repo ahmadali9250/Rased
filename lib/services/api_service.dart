@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:image_picker/image_picker.dart';
 
-// --- 1. The Data Model (Matches your friend's HazardGetDto) ---
+// --- 1. The Data Model ---
 class Hazard {
   final String id;
   final LatLng location;
@@ -20,7 +20,6 @@ class Hazard {
     required this.detectionCount,
   });
 
-  // Convert the JSON from the API into a Dart Object
   factory Hazard.fromJson(Map<String, dynamic> json) {
     return Hazard(
       id: json['id'] ?? '',
@@ -31,11 +30,10 @@ class Hazard {
     );
   }
 
-  // Calculate severity color based on how many times it was detected!
   Color get severityColor {
-    if (detectionCount > 10) return const Color(0xFFFF3B3B); // High: Red
-    if (detectionCount > 3) return const Color(0xFFFF8800);  // Medium: Orange
-    return const Color(0xFFFFD700);                          // Low: Yellow
+    if (detectionCount > 10) return const Color(0xFFFF3B3B);
+    if (detectionCount > 3) return const Color(0xFFFF8800);
+    return const Color(0xFFFFD700);
   }
 }
 
@@ -45,6 +43,8 @@ class ApiService {
   static String? _token;
   static String? loggedInEmail;
   static String? loggedInRole;
+
+  static String currentLanguage = 'en';
 
   // --- Log Out ---
   static void logout() {
@@ -59,14 +59,8 @@ class ApiService {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/Auth/login'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept-Language': 'en',
-        },
-        body: jsonEncode({
-          "email": email,
-          "passwordHashed": password
-        }),
+        headers: {'Content-Type': 'application/json', 'Accept-Language': 'en'},
+        body: jsonEncode({"email": email, "passwordHashed": password}),
       );
 
       if (response.statusCode == 200) {
@@ -77,10 +71,9 @@ class ApiService {
         debugPrint("✅ Successfully logged in! Token saved.");
         return true;
       }
-      
+
       debugPrint("❌ Login failed: ${response.statusCode}");
-      return false; // Wrong password!
-      
+      return false;
     } catch (e) {
       debugPrint("❌ Internet error during login: $e");
       return false;
@@ -89,7 +82,6 @@ class ApiService {
 
   // B. Fetch all hazards for the map
   static Future<List<Hazard>> fetchHazards() async {
-    // If we don't have a token, we can't fetch data!
     if (_token == null) {
       debugPrint("❌ No token found. Please log in first.");
       return [];
@@ -98,14 +90,10 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/Hazards/all'),
-        headers: {
-          'Authorization': 'Bearer $_token', // Send the secret key!
-          'Accept-Language': 'en',
-        },
+        headers: {'Authorization': 'Bearer $_token', 'Accept-Language': 'en'},
       );
 
       if (response.statusCode == 200) {
-        // Convert the JSON text into a list of Hazard objects
         List<dynamic> jsonList = jsonDecode(response.body);
         debugPrint("✅ Fetched ${jsonList.length} hazards from the API!");
         return jsonList.map((json) => Hazard.fromJson(json)).toList();
@@ -120,41 +108,41 @@ class ApiService {
 
   // C. Upload a new hazard report (Web & Mobile Safe!)
   static Future<bool> submitReport({
-    required XFile photo, // Changed from File to XFile
+    required XFile photo,
     required double latitude,
     required double longitude,
   }) async {
-if (_token == null) {
-  debugPrint("❌ No token found. Cannot submit report.");
-  return false; 
-}
+    if (_token == null) {
+      debugPrint("❌ No token found. Cannot submit report.");
+      return false;
+    }
 
     try {
-      var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/Hazards/report'));
-      
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/Hazards/report'),
+      );
+
       request.headers['Authorization'] = 'Bearer $_token';
       request.headers['Accept-Language'] = 'en';
 
       request.fields['Latitude'] = latitude.toString();
       request.fields['Longitude'] = longitude.toString();
-      request.fields['TypeId'] = '1'; 
-      request.fields['StatusID'] = '1'; 
+      request.fields['TypeId'] = '1';
+      request.fields['StatusID'] = '1';
 
-      // Read the file as bytes (This is the magic line that fixes it for the Web!)
       final bytes = await photo.readAsBytes();
-      request.files.add(http.MultipartFile.fromBytes(
-        'Image', 
-        bytes, 
-        filename: photo.name,
-      ));
+      request.files.add(
+        http.MultipartFile.fromBytes('Image', bytes, filename: photo.name),
+      );
 
       var response = await request.send();
-      
+
       if (response.statusCode == 201 || response.statusCode == 200) {
         debugPrint("✅ Report sent successfully!");
         return true;
       }
-      
+
       debugPrint("❌ Failed to send report: ${response.statusCode}");
       return false;
     } catch (e) {
