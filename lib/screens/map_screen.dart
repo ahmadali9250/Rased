@@ -226,10 +226,20 @@ class _MapScreenState extends State<MapScreen> {
                 FlutterMap(
                   options: MapOptions(
                     initialCenter: _ammanCenter,
-                    initialZoom: 13.5,
+                    initialZoom: 13.0,
+                    minZoom: 5.0,
+                    maxZoom: 18.0,
+                    cameraConstraint: CameraConstraint.contain(
+                      bounds: LatLngBounds(
+                        const LatLng(
+                          -90,
+                          -180,
+                        ), // South-West corner of the Earth
+                        const LatLng(90, 180), // North-East corner of the Earth
+                      ),
+                    ),
                   ),
                   children: [
-                    // Dark Mode Map Tiles
                     TileLayer(
                       urlTemplate:
                           'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
