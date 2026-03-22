@@ -44,11 +44,13 @@ class ApiService {
   static const String baseUrl = 'https://tareeq-api.onrender.com/api';
   static String? _token;
   static String? loggedInEmail;
+  static String? loggedInRole;
 
   // --- Log Out ---
   static void logout() {
     _token = null;
     loggedInEmail = null;
+    loggedInRole = null;
     debugPrint("✅ User logged out. Token cleared.");
   }
 
@@ -70,7 +72,8 @@ class ApiService {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         _token = data['token'];
-        loggedInEmail = email;
+        loggedInEmail = data['email'];
+        loggedInRole = data['role'];
         debugPrint("✅ Successfully logged in! Token saved.");
         return true;
       }

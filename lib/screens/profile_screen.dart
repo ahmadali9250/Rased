@@ -53,8 +53,8 @@ class ProfileScreen extends StatelessWidget {
                     ),
                     child: Column(
                       children: [
-                        const Text(
-                          "Abed",
+                        Text(
+                          ApiService.loggedInEmail?.split('@')[0] ?? "User",
                           style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 8),
@@ -70,8 +70,11 @@ class ProfileScreen extends StatelessWidget {
                           children: [
                             Column(
                               children: [
-                                Text("Role", style: TextStyle(color: Colors.white54, fontSize: 12)),
-                                Text("User", style: TextStyle(color: Color(0xFFFFD700), fontSize: 16, fontWeight: FontWeight.bold)),
+                                const Text("Role", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                                Text(
+                                  ApiService.loggedInRole ?? "User",
+                                  style: const TextStyle(color: Color(0xFFFFD700), fontSize: 16, fontWeight: FontWeight.bold),
+                                ),
                               ],
                             ),
                             Column(
