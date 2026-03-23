@@ -1,7 +1,16 @@
 import 'package:flutter/material.dart';
 import 'screens/login_screen.dart';
+import 'services/tflite_service.dart';
 
-void main() {
+void main() async {
+  // 1. Tell Flutter we are doing background work before starting
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // 2. Boot up your AI Brain
+  final aiService = TFLiteService();
+  await aiService.initializeModel();
+
+  // 3. Start the App!
   runApp(const TareeqiApp());
 }
 
