@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../services/api_service.dart';
+import 'package:country_picker/country_picker.dart';
 
 class ProfileDetailsScreen extends StatefulWidget {
   const ProfileDetailsScreen({super.key});
@@ -15,6 +17,8 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   late String _initialPhone;
   late String _initialEmail;
   bool _hasChanges = false;
+  String _selectedCountryCode = '962';
+  String _selectedCountryFlag = '🇯🇴';
 
   @override
   void initState() {
@@ -55,6 +59,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     final isArabic = ApiService.currentLanguage == 'ar';
     final TextEditingController oldPass = TextEditingController();
     final TextEditingController newPass = TextEditingController();
+    final TextEditingController confirmPass = TextEditingController();
 
     showDialog(
       context: context,
@@ -73,47 +78,81 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Old Password Field
-                TextField(
-                  controller: oldPass,
-                  obscureText: true, // Hides the password!
-                  style: const TextStyle(color: Colors.white),
-                  decoration: InputDecoration(
-                    labelText: isArabic
-                        ? "كلمة المرور الحالية"
-                        : "Current Password",
-                    labelStyle: const TextStyle(color: Colors.white54),
-                    enabledBorder: const UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.white38),
-                    ),
-                    focusedBorder: const UnderlineInputBorder(
-                      borderSide: BorderSide(color: Color(0xFFFFD700)),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // New Password Field
-                TextField(
-                  controller: newPass,
-                  obscureText: true,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: InputDecoration(
-                    labelText: isArabic
-                        ? "كلمة المرور الجديدة"
-                        : "New Password",
-                    labelStyle: const TextStyle(color: Colors.white54),
-                    enabledBorder: const UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.white38),
-                    ),
-                    focusedBorder: const UnderlineInputBorder(
-                      borderSide: BorderSide(color: Color(0xFFFFD700)),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: oldPass,
+                    obscureText: true,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: isArabic
+                          ? "كلمة المرور الحالية"
+                          : "Current Password",
+                      labelStyle: const TextStyle(color: Colors.white54),
+                      enabledBorder: const UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white38),
+                      ),
+                      focusedBorder: const UnderlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFFFFD700)),
+                      ),
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: newPass,
+                    obscureText: true,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: isArabic
+                          ? "كلمة المرور الجديدة"
+                          : "New Password",
+                      labelStyle: const TextStyle(color: Colors.white54),
+                      enabledBorder: const UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white38),
+                      ),
+                      focusedBorder: const UnderlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFFFFD700)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: confirmPass,
+                    obscureText: true,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: isArabic
+                          ? "تأكيد كلمة المرور الجديدة"
+                          : "Confirm New Password",
+                      labelStyle: const TextStyle(color: Colors.white54),
+                      enabledBorder: const UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white38),
+                      ),
+                      focusedBorder: const UnderlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFFFFD700)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: isArabic
+                        ? Alignment.centerRight
+                        : Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _showVerificationMethodDialog();
+                      },
+                      child: Text(
+                        isArabic ? "نسيت كلمة المرور؟" : "Forgot Password?",
+                        style: const TextStyle(color: Color(0xFFFFD700)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
             actions: [
               TextButton(
@@ -127,9 +166,73 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFFFFD700),
                   foregroundColor: Colors.black,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                 ),
                 onPressed: () {
-                  // Connect to API later!
+                  // Rule A: All fields must be filled!
+                  if (oldPass.text.isEmpty ||
+                      newPass.text.isEmpty ||
+                      confirmPass.text.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          isArabic
+                              ? '❌ يرجى تعبئة جميع الحقول!'
+                              : '❌ Please fill all fields!',
+                        ),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                    return;
+                  }
+
+                  // Rule B: Old password must be correct (simulate with "1234")
+                  if (oldPass.text != "1234") {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          isArabic
+                              ? '❌ كلمة المرور الحالية غير صحيحة! (جرب 1234)'
+                              : '❌ Incorrect current password! (Try 1234)',
+                        ),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                    return;
+                  }
+
+                  // Rule C: New passwords must match!
+                  if (newPass.text != confirmPass.text) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          isArabic
+                              ? '❌ كلمة المرور الجديدة غير متطابقة!'
+                              : '❌ New passwords do not match!',
+                        ),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                    return;
+                  }
+
+                  // Rule D: New password cannot be the old password!
+                  if (newPass.text == oldPass.text) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          isArabic
+                              ? '❌ كلمة المرور الجديدة يجب أن تكون مختلفة عن القديمة!'
+                              : '❌ New password cannot be the same as the old one!',
+                        ),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                    return;
+                  }
+
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
@@ -155,7 +258,98 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   }
 
   // ==========================================
-  // VERIFICATION DIALOG
+  // CHOOSE VERIFICATION METHOD DIALOG
+  // ==========================================
+  void _showVerificationMethodDialog() {
+    final isArabic = ApiService.currentLanguage == 'ar';
+    final currentEmail = _emailController.text;
+    final currentPhone = _phoneController.text;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return Directionality(
+          textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: Text(
+              isArabic ? "طريقة التحقق" : "Verification Method",
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  isArabic
+                      ? "أين تريد استلام رمز التحقق؟"
+                      : "Where would you like to receive the verification code?",
+                  style: const TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 20),
+                ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  tileColor: Colors.white.withValues(alpha: 0.05),
+                  leading: const Icon(Icons.sms, color: Color(0xFFFFD700)),
+                  title: Text(
+                    isArabic ? "رسالة نصية (SMS)" : "SMS",
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  subtitle: Text(
+                    currentPhone,
+                    style: const TextStyle(color: Colors.white54),
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showVerificationDialog("sms", currentPhone);
+                  },
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  tileColor: Colors.white.withValues(alpha: 0.05),
+                  leading: const Icon(Icons.email, color: Color(0xFFFFD700)),
+                  title: Text(
+                    isArabic ? "البريد الإلكتروني" : "Email",
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  subtitle: Text(
+                    currentEmail,
+                    style: const TextStyle(color: Colors.white54),
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showVerificationDialog("email", currentEmail);
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(
+                  isArabic ? "إلغاء" : "Cancel",
+                  style: const TextStyle(color: Colors.white54),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ==========================================
+  // VERIFICATION DIALOG (6-Digit Strict)
   // ==========================================
   void _showVerificationDialog(String type, String newValue) {
     final isArabic = ApiService.currentLanguage == 'ar';
@@ -183,16 +377,19 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
+                  // CHANGED: 4 to 6
                   isArabic
-                      ? "الرجاء إدخال الرمز المكون من 4 أرقام المرسل إلى $newValue"
-                      : "Please enter the 4-digit code sent to $newValue",
+                      ? "الرجاء إدخال الرمز المكون من 6 أرقام المرسل إلى $newValue"
+                      : "Please enter the 6-digit code sent to $newValue",
                   style: const TextStyle(color: Colors.white70),
                 ),
                 const SizedBox(height: 20),
                 TextField(
                   controller: otpController,
                   keyboardType: TextInputType.number,
-                  maxLength: 4,
+                  // ADDED: Strictly block anything that isn't a number!
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  maxLength: 6, // CHANGED: 4 to 6
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     color: Colors.white,
@@ -232,13 +429,28 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
                   ),
                 ),
                 onPressed: () {
+                  // CHANGED: Validate for exactly 6 digits!
+                  if (otpController.text.length != 6) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          isArabic
+                              ? '❌ يرجى إدخال الرمز المكون من 6 أرقام بالكامل!'
+                              : '❌ Please enter the full 6-digit code!',
+                        ),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                    return;
+                  }
+
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
                         isArabic
-                            ? '✅ تم تحديث البيانات بنجاح!'
-                            : '✅ Details updated successfully!',
+                            ? '✅ تم التحقق بنجاح!'
+                            : '✅ Verified successfully!',
                       ),
                       backgroundColor: Colors.green,
                     ),
@@ -296,7 +508,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
                       Icons.verified_user,
                       color: Colors.green,
                       size: 24,
-                    ), // Official badge!
+                    ),
                   ),
                 ],
               ),
@@ -306,7 +518,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             // 2. Full Name (Locked)
             _buildLockedField(
               label: isArabic ? "الاسم الكامل" : "Full Name",
-              value: "Ahmad Ali AlSayyed Ahmad",
+              value: "Ahmad Ali Alsayyed Ahmad",
             ),
             const SizedBox(height: 16),
 
@@ -336,6 +548,54 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
               label: isArabic ? "رقم الهاتف" : "Phone Number",
               controller: _phoneController,
               icon: Icons.phone,
+              // --- THE NEW GLOBAL COUNTRY PICKER ---
+              customPrefix: InkWell(
+                onTap: () {
+                  showCountryPicker(
+                    context: context,
+                    showPhoneCode: true, // Shows the +962 etc.
+                    countryListTheme: CountryListThemeData(
+                      backgroundColor: const Color(
+                        0xFF1E1E1E,
+                      ), // Dark mode background
+                      textStyle: const TextStyle(color: Colors.white),
+                      searchTextStyle: const TextStyle(color: Colors.white),
+                      bottomSheetHeight:
+                          500, // Makes it a nice half-screen popup
+                      borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(16),
+                        topRight: Radius.circular(16),
+                      ),
+                    ),
+                    onSelect: (Country country) {
+                      setState(() {
+                        _selectedCountryFlag = country.flagEmoji;
+                        _selectedCountryCode = country.phoneCode;
+                        _hasChanges = true; // Lights up the Save button!
+                      });
+                    },
+                  );
+                },
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(width: 12),
+                    Text(
+                      '$_selectedCountryFlag +$_selectedCountryCode',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.arrow_drop_down, color: Color(0xFFFFD700)),
+                    const SizedBox(width: 8),
+                    Container(width: 1, height: 24, color: Colors.white38),
+                    const SizedBox(width: 12),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 16),
 
@@ -363,9 +623,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
               ),
               style: OutlinedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
-                side: const BorderSide(
-                  color: Colors.white38,
-                ), // Subtle white border
+                side: const BorderSide(color: Colors.white38),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
@@ -486,6 +744,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     required String label,
     required TextEditingController controller,
     required IconData icon,
+    Widget? customPrefix,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -498,8 +757,11 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         TextField(
           controller: controller,
           style: const TextStyle(color: Colors.white, fontSize: 16),
+          keyboardType: icon == Icons.phone
+              ? TextInputType.phone
+              : TextInputType.text,
           decoration: InputDecoration(
-            prefixIcon: Icon(icon, color: Colors.white54),
+            prefixIcon: customPrefix ?? Icon(icon, color: Colors.white54),
             suffixIcon: const Icon(
               Icons.edit,
               color: Color(0xFFFFD700),

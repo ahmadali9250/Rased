@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'map_screen.dart';
 import '../services/api_service.dart';
+import 'package:country_picker/country_picker.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -25,7 +26,6 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _handleLogin() async {
-    // Check the language right when they press the button!
     final isArabic = _language == 'ar';
 
     // 1. Block empty boxes!
@@ -75,6 +75,262 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
     }
+  }
+
+  // --- FORGOT PASSWORD DIALOG ---
+  // ==========================================
+  // 1. CHOOSE RESET METHOD DIALOG
+  // ==========================================
+  void _showForgotPasswordChoiceDialog() {
+    final isArabic = ApiService.currentLanguage == 'ar';
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return Directionality(
+          textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: Text(
+              isArabic ? "طريقة استعادة كلمة المرور" : "Reset Password Method",
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Option 1: Email
+                ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  tileColor: Colors.white.withValues(alpha: 0.05),
+                  leading: const Icon(Icons.email, color: Color(0xFFFFD700)),
+                  title: Text(
+                    isArabic ? "البريد الإلكتروني" : "Email",
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showResetInputDialog("email");
+                  },
+                ),
+                const SizedBox(height: 12),
+                // Option 2: SMS
+                ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  tileColor: Colors.white.withValues(alpha: 0.05),
+                  leading: const Icon(Icons.sms, color: Color(0xFFFFD700)),
+                  title: Text(
+                    isArabic ? "رسالة نصية (SMS)" : "SMS",
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showResetInputDialog("sms");
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(
+                  isArabic ? "إلغاء" : "Cancel",
+                  style: const TextStyle(color: Colors.white54),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ==========================================
+  // 2. ENTER EMAIL OR PHONE DIALOG (With Dropdown)
+  // ==========================================
+  void _showResetInputDialog(String method) {
+    final isArabic = ApiService.currentLanguage == 'ar';
+    final TextEditingController inputController = TextEditingController();
+    final isEmail = method == 'email';
+
+    String selectedCountryCode = '962';
+    String selectedCountryFlag = '🇯🇴';
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return Directionality(
+              textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
+              child: AlertDialog(
+                backgroundColor: const Color(0xFF1E1E1E),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                title: Text(
+                  isArabic ? "إعادة تعيين كلمة المرور" : "Reset Password",
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      isArabic
+                          ? (isEmail
+                                ? "أدخل بريدك الإلكتروني لتلقي الرمز المكون من 6 أرقام."
+                                : "أدخل رقم هاتفك لتلقي الرمز المكون من 6 أرقام.")
+                          : (isEmail
+                                ? "Enter your email to receive a 6-digit code."
+                                : "Enter your phone number to receive a 6-digit code."),
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: inputController,
+                      style: const TextStyle(color: Colors.white),
+                      keyboardType: isEmail
+                          ? TextInputType.emailAddress
+                          : TextInputType.phone,
+                      decoration: InputDecoration(
+                        labelText: isEmail
+                            ? (isArabic ? "البريد الإلكتروني" : "Email")
+                            : (isArabic ? "رقم الهاتف" : "Phone Number"),
+                        labelStyle: const TextStyle(color: Colors.white54),
+                        // --- DYNAMIC GLOBAL PREFIX ---
+                        prefixIcon: isEmail
+                            ? const Icon(Icons.email, color: Colors.white54)
+                            : InkWell(
+                                onTap: () {
+                                  showCountryPicker(
+                                    context: context,
+                                    showPhoneCode: true,
+                                    countryListTheme:
+                                        const CountryListThemeData(
+                                          backgroundColor: Color(0xFF1E1E1E),
+                                          textStyle: TextStyle(
+                                            color: Colors.white,
+                                          ),
+                                          searchTextStyle: TextStyle(
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                    onSelect: (Country country) {
+                                      setStateDialog(() {
+                                        // Updates just the dialog!
+                                        selectedCountryFlag = country.flagEmoji;
+                                        selectedCountryCode = country.phoneCode;
+                                      });
+                                    },
+                                  );
+                                },
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const SizedBox(width: 12),
+                                    Text(
+                                      '$selectedCountryFlag +$selectedCountryCode',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    const Icon(
+                                      Icons.arrow_drop_down,
+                                      color: Color(0xFFFFD700),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      width: 1,
+                                      height: 24,
+                                      color: Colors.white38,
+                                    ),
+                                    const SizedBox(width: 12),
+                                  ],
+                                ),
+                              ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Colors.white38),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(
+                            color: Color(0xFFFFD700),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text(
+                      isArabic ? "إلغاء" : "Cancel",
+                      style: const TextStyle(color: Colors.white54),
+                    ),
+                  ),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFFD700),
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    onPressed: () {
+                      if (inputController.text.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              isArabic
+                                  ? "❌ يرجى إدخال البيانات المطلوبة!"
+                                  : "❌ Please enter the required information!",
+                            ),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                        return;
+                      }
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            isArabic
+                                ? "✅ تم إرسال الرمز بنجاح!"
+                                : "✅ Code sent successfully!",
+                          ),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    },
+                    child: Text(
+                      isArabic ? "إرسال" : "Send",
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -201,7 +457,26 @@ class _LoginScreenState extends State<LoginScreen> {
                               ),
                             ),
                           ),
-                          const SizedBox(height: 30),
+
+                          // --- FORGOT PASSWORD BUTTON ---
+                          Align(
+                            alignment: isArabic
+                                ? Alignment.centerLeft
+                                : Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: _showForgotPasswordChoiceDialog,
+                              child: Text(
+                                isArabic
+                                    ? "نسيت كلمة المرور؟"
+                                    : "Forgot Password?",
+                                style: const TextStyle(
+                                  color: Color(0xFFFFD700),
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
 
                           // Login Button
                           SizedBox(
