@@ -60,7 +60,7 @@ class ApiService {
       final response = await http.post(
         Uri.parse('$baseUrl/Auth/login'),
         headers: {'Content-Type': 'application/json', 'Accept-Language': 'en'},
-        body: jsonEncode({"email": email, "passwordHashed": password}),
+        body: jsonEncode({"email": email, "password": password}),
       );
 
       if (response.statusCode == 200) {

@@ -128,18 +128,7 @@ class _AccountScreenState extends State<AccountScreen> {
             ),
             const SizedBox(height: 24),
 
-            // --- 2. My Profile Section ---
-            _buildSectionTitle(isArabic ? "الملف الشخصي" : "My Profile"),
-            _buildCard([
-              _buildTile(
-                isArabic ? "تغيير كلمة المرور" : "Change Password",
-                isArabic,
-                onTap: () {},
-              ),
-            ]),
-            const SizedBox(height: 24),
-
-            // --- 3. Settings Section ---
+            // --- 2. Settings Section ---
             _buildSectionTitle(isArabic ? "الإعدادات" : "Settings"),
             _buildCard([
               _buildTile(
@@ -176,7 +165,7 @@ class _AccountScreenState extends State<AccountScreen> {
             ]),
             const SizedBox(height: 24),
 
-            // --- 4. Help & Support Section ---
+            // --- 3. Help & Support Section ---
             _buildSectionTitle(isArabic ? "المساعدة والدعم" : "Help & Support"),
             _buildCard([
               _buildTile(
@@ -211,7 +200,7 @@ class _AccountScreenState extends State<AccountScreen> {
             ]),
             const SizedBox(height: 24),
 
-            // --- 5. Logout Section ---
+            // --- 4. Logout Section ---
             _buildCard([
               ListTile(
                 leading: const Icon(Icons.logout, color: Colors.redAccent),
