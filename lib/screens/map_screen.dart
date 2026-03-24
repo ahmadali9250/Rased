@@ -4,9 +4,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'my_reports_screen.dart';
 import '../services/api_service.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:geolocator/geolocator.dart';
 import 'account_screen.dart';
+import 'report_damage_screen.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -46,31 +45,6 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
-  // --- GPS LOGIC ---
-  Future<Position> _determinePosition() async {
-    bool serviceEnabled;
-    LocationPermission permission;
-
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      return Future.error('Location services are disabled.');
-    }
-
-    permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        return Future.error('Location permissions are denied');
-      }
-    }
-
-    if (permission == LocationPermission.deniedForever) {
-      return Future.error('Location permissions are permanently denied.');
-    }
-
-    return await Geolocator.getCurrentPosition();
-  }
-
   @override
   Widget build(BuildContext context) {
     final isArabic = _language == 'ar';
@@ -88,57 +62,13 @@ class _MapScreenState extends State<MapScreen> {
             height: 80,
             width: 80,
             child: FloatingActionButton(
-              onPressed: () async {
-                final picker = ImagePicker();
-                final XFile? photo = await picker.pickImage(
-                  source: ImageSource.camera,
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const ReportDamageScreen(),
+                  ),
                 );
-
-                if (photo != null) {
-                  if (!context.mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Getting location & uploading...'),
-                      backgroundColor: Colors.orange,
-                    ),
-                  );
-
-                  try {
-                    Position position = await _determinePosition();
-
-                    bool success = await ApiService.submitReport(
-                      photo: photo,
-                      latitude: position.latitude,
-                      longitude: position.longitude,
-                    );
-
-                    if (!context.mounted) return;
-                    if (success) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('✅ Report submitted at your location!'),
-                          backgroundColor: Colors.green,
-                        ),
-                      );
-                      _fetchLiveHazards();
-                    } else {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('❌ Failed to submit.'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                  } catch (e) {
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('❌ Error: $e'),
-                        backgroundColor: Colors.red,
-                      ),
-                    );
-                  }
-                }
               },
               backgroundColor: const Color(0xFFFFD700),
               elevation: 4,
@@ -150,7 +80,7 @@ class _MapScreenState extends State<MapScreen> {
                   Text(
                     isArabic
                         ? 'رصد'
-                        : 'Detect', // <-- Make sure it uses isArabic here!
+                        : 'Detect',
                     style: const TextStyle(
                       color: Colors.black,
                       fontWeight: FontWeight.bold,

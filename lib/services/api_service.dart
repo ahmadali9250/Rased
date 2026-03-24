@@ -106,11 +106,12 @@ class ApiService {
     }
   }
 
-  // C. Upload a new hazard report (Web & Mobile Safe!)
+  // C. Upload a new hazard report
   static Future<bool> submitReport({
     required XFile photo,
     required double latitude,
     required double longitude,
+    required int typeId,
   }) async {
     if (_token == null) {
       debugPrint("❌ No token found. Cannot submit report.");
@@ -128,7 +129,7 @@ class ApiService {
 
       request.fields['Latitude'] = latitude.toString();
       request.fields['Longitude'] = longitude.toString();
-      request.fields['TypeId'] = '1';
+      request.fields['TypeId'] = typeId.toString();
       request.fields['StatusID'] = '1';
 
       final bytes = await photo.readAsBytes();

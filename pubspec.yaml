@@ -42,6 +42,7 @@ dependencies:
   geocoding: ^4.0.0
   country_picker: ^2.0.27
   tflite_flutter: ^0.12.1
+  image: ^4.8.0
 
 dev_dependencies:
   flutter_test:
