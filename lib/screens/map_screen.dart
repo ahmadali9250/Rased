@@ -6,6 +6,7 @@ import 'my_reports_screen.dart';
 import '../services/api_service.dart';
 import 'account_screen.dart';
 import 'report_damage_screen.dart';
+import 'package:geocoding/geocoding.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -78,9 +79,7 @@ class _MapScreenState extends State<MapScreen> {
                 children: [
                   const Icon(Icons.camera_alt, color: Colors.black, size: 28),
                   Text(
-                    isArabic
-                        ? 'رصد'
-                        : 'Detect',
+                    isArabic ? 'رصد' : 'Detect',
                     style: const TextStyle(
                       color: Colors.black,
                       fontWeight: FontWeight.bold,
@@ -103,45 +102,30 @@ class _MapScreenState extends State<MapScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                // 1. Map Button
                 _buildBottomNavItem(
                   Icons.map,
                   isArabic ? 'الخريطة' : 'Map',
                   _selectedIndex == 0,
-                  () {
-                    setState(() => _selectedIndex = 0);
-                  },
+                  () => setState(() => _selectedIndex = 0),
                 ),
-
-                // 2. My Reports Button
                 _buildBottomNavItem(
                   Icons.receipt_long,
                   isArabic ? 'بلاغاتي' : 'My Reports',
                   _selectedIndex == 1,
-                  () {
-                    setState(() => _selectedIndex = 1);
-                  },
+                  () => setState(() => _selectedIndex = 1),
                 ),
-
                 const SizedBox(width: 48),
-                // 3. Notifications Button
                 _buildBottomNavItem(
                   Icons.notifications_none,
                   isArabic ? 'الإشعارات' : 'Notifications',
                   _selectedIndex == 2,
-                  () {
-                    setState(() => _selectedIndex = 2);
-                  },
+                  () => setState(() => _selectedIndex = 2),
                 ),
-
-                // 4. Account/Profile Button
                 _buildBottomNavItem(
                   Icons.person_outline,
                   isArabic ? 'الحساب' : 'Account',
                   _selectedIndex == 3,
-                  () {
-                    setState(() => _selectedIndex = 3);
-                  },
+                  () => setState(() => _selectedIndex = 3),
                 ),
               ],
             ),
@@ -161,18 +145,14 @@ class _MapScreenState extends State<MapScreen> {
                     maxZoom: 18.0,
                     cameraConstraint: CameraConstraint.contain(
                       bounds: LatLngBounds(
-                        const LatLng(
-                          -90,
-                          -180,
-                        ), // South-West corner of the Earth
-                        const LatLng(90, 180), // North-East corner of the Earth
+                        const LatLng(-90, -180),
+                        const LatLng(90, 180),
                       ),
                     ),
                   ),
                   children: [
                     TileLayer(
-                      urlTemplate:
-                          'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+                      urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
                       subdomains: const ['a', 'b', 'c'],
                     ),
                     // Live API Markers
@@ -182,7 +162,13 @@ class _MapScreenState extends State<MapScreen> {
                           point: hazard.location,
                           width: 70,
                           height: 70,
-                          child: _buildGlowingMarker(hazard.severityColor),
+                          child: GestureDetector(
+                            onTap: () {
+                              print("📍 Tapped on a hazard!");
+                              _showHazardDetails(context, hazard);
+                            },
+                            child: _buildGlowingMarker(hazard.severityColor),
+                          ),
                         );
                       }).toList(),
                     ),
@@ -192,7 +178,7 @@ class _MapScreenState extends State<MapScreen> {
                 // 2. Glassmorphism Top Header
                 _buildTopHeader(),
 
-                // 3. Loading Spinner (Only shows when _isLoading is true)
+                // 3. Loading Spinner
                 if (_isLoading)
                   const Center(
                     child: CircularProgressIndicator(color: Color(0xFFFFD700)),
@@ -228,7 +214,6 @@ class _MapScreenState extends State<MapScreen> {
     return Stack(
       alignment: Alignment.center,
       children: [
-        // Outer Glow
         Container(
           width: 70,
           height: 70,
@@ -237,7 +222,6 @@ class _MapScreenState extends State<MapScreen> {
             color: coreColor.withValues(alpha: 0.15),
           ),
         ),
-        // Middle Glimmer
         Container(
           width: 45,
           height: 45,
@@ -246,7 +230,6 @@ class _MapScreenState extends State<MapScreen> {
             color: coreColor.withValues(alpha: 0.4),
           ),
         ),
-        // Inner Core
         Container(
           width: 24,
           height: 24,
@@ -279,15 +262,15 @@ class _MapScreenState extends State<MapScreen> {
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
             ),
-            child: Row(
+            child: const Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Text(
+                Text(
                   'Rased | راصد',
                   style: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFFFFD700), // Bold Yellow
+                    color: Color(0xFFFFD700),
                     letterSpacing: 1.2,
                   ),
                 ),
@@ -299,13 +282,7 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  // --- Bottom Nav Item Helper ---
-  Widget _buildBottomNavItem(
-    IconData icon,
-    String label,
-    bool isSelected,
-    VoidCallback onTap,
-  ) {
+  Widget _buildBottomNavItem(IconData icon, String label, bool isSelected, VoidCallback onTap) {
     return InkWell(
       onTap: onTap,
       child: Column(
@@ -328,6 +305,174 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  // --- TRANSLATE ID TO STRING ---
+  String _getDamageTypeName(int typeId) {
+    switch (typeId) {
+      case 1: return _language == 'ar' ? 'حفرة' : 'Pothole';
+      case 2: return _language == 'ar' ? 'تشقق' : 'Crack';
+      case 3: return _language == 'ar' ? 'خطوط باهتة' : 'Faded Lines';
+      default: return _language == 'ar' ? 'أخرى' : 'Other';
+    }
+  }
+
+  // --- THE POPUP UI ---
+  void _showHazardDetails(BuildContext context, Hazard hazard) {
+    final isArabic = _language == 'ar';
+    final typeName = _getDamageTypeName(hazard.typeId);
+    
+    // Default to numbers while translate
+    String addressText = '${hazard.location.latitude.toStringAsFixed(5)}, ${hazard.location.longitude.toStringAsFixed(5)}';
+    bool isTranslatingLocation = true;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setStateBottomSheet) {
+            
+            // Fire the translator exactly once
+            if (isTranslatingLocation) {
+              isTranslatingLocation = false; 
+              placemarkFromCoordinates(hazard.location.latitude, hazard.location.longitude)
+                .then((placemarks) {
+                  if (placemarks.isNotEmpty) {
+                    Placemark place = placemarks[0];
+                    setStateBottomSheet(() {
+                      addressText = "${place.street}, ${place.locality}";
+                    });
+                  }
+                }).catchError((e) {
+                  print("Could not translate location.");
+                });
+            }
+
+            return Directionality(
+              textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // --- HEADER ---
+                    Row(
+                      children: [
+                        Container(
+                          width: 16,
+                          height: 16,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: hazard.severityColor,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          isArabic ? 'تفاصيل البلاغ' : 'Hazard Details',
+                          style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16.0),
+                      child: Divider(color: Colors.white24, thickness: 1),
+                    ),
+
+                    // --- 📸 NEW IMAGE UI BLOCK 📸 ---
+                    if (hazard.fullImageUrl != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 20.0),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: Image.network(
+                            hazard.fullImageUrl!,
+                            width: double.infinity,
+                            height: 200,
+                            fit: BoxFit.cover,
+                            loadingBuilder: (context, child, loadingProgress) {
+                              if (loadingProgress == null) return child;
+                              return const SizedBox(
+                                height: 200,
+                                child: Center(child: CircularProgressIndicator(color: Color(0xFFFFD700))),
+                              );
+                            },
+                            errorBuilder: (context, error, stackTrace) {
+                              return Container(
+                                height: 200,
+                                width: double.infinity,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.05),
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                                ),
+                                child: const Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.broken_image, color: Colors.white38, size: 40),
+                                    SizedBox(height: 8),
+                                    Text('Image not found on server', style: TextStyle(color: Colors.white38)),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    // --- END IMAGE UI BLOCK ---
+
+                    // --- INFO ROWS ---
+                    _buildDetailRow(
+                      Icons.warning_amber_rounded, 
+                      isArabic ? 'نوع الضرر:' : 'Type:', 
+                      typeName
+                    ),
+                    const SizedBox(height: 16),
+                    _buildDetailRow(
+                      Icons.location_on, 
+                      isArabic ? 'الموقع:' : 'Location:', 
+                      addressText
+                    ),
+                    const SizedBox(height: 16),
+                    _buildDetailRow(
+                      Icons.people_alt_outlined, 
+                      isArabic ? 'عدد التبليغات:' : 'Reports Count:', 
+                      '${hazard.detectionCount} ${isArabic ? 'مرات' : 'times'}'
+                    ),
+                    const SizedBox(height: 30),
+                  ],
+                ),
+              ),
+            );
+          }
+        );
+      }
+    );
+  }
+
+  Widget _buildDetailRow(IconData icon, String label, String value) {
+    return Row(
+      children: [
+        Icon(icon, color: const Color(0xFFFFD700), size: 22),
+        const SizedBox(width: 12),
+        Text(
+          label, 
+          style: const TextStyle(color: Colors.white70, fontSize: 16)
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            value, 
+            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)
+          )
+        ),
+      ],
     );
   }
 }

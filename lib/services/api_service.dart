@@ -11,6 +11,7 @@ class Hazard {
   final int typeId;
   final int statusId;
   final int detectionCount;
+  final String? imagePath;
 
   Hazard({
     required this.id,
@@ -18,6 +19,7 @@ class Hazard {
     required this.typeId,
     required this.statusId,
     required this.detectionCount,
+    this.imagePath,
   });
 
   factory Hazard.fromJson(Map<String, dynamic> json) {
@@ -27,6 +29,7 @@ class Hazard {
       typeId: json['typeId'] ?? 0,
       statusId: json['statusId'] ?? 0,
       detectionCount: json['detectionCount'] ?? 0,
+      imagePath: json['imagePath'],
     );
   }
 
@@ -34,6 +37,15 @@ class Hazard {
     if (detectionCount > 10) return const Color(0xFFFF3B3B);
     if (detectionCount > 3) return const Color(0xFFFF8800);
     return const Color(0xFFFFD700);
+  }
+
+  // --- SMART IMAGE URL FIXER ---
+  // Sometimes databases return "uploads/pic.jpg" instead of the full "https://..." link. 
+  // This makes sure Flutter always has a working internet link to download the picture!
+  String? get fullImageUrl {
+    if (imagePath == null || imagePath!.isEmpty) return null;
+    if (imagePath!.startsWith('http')) return imagePath; 
+    return 'https://tareeq-api.onrender.com/$imagePath'; 
   }
 }
 
