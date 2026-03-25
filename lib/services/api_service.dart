@@ -34,9 +34,9 @@ class Hazard {
   }
 
   Color get severityColor {
-    if (detectionCount > 10) return const Color(0xFFFF3B3B);
-    if (detectionCount > 3) return const Color(0xFFFF8800);
-    return const Color(0xFFFFD700);
+    if (detectionCount > 10) return Colors.red;
+    if (detectionCount > 3) return Colors.yellow;
+    return Colors.green;
   }
 
   // --- SMART IMAGE URL FIXER ---

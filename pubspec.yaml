@@ -43,6 +43,8 @@ dependencies:
   country_picker: ^2.0.27
   tflite_flutter: ^0.12.1
   image: ^4.8.0
+  flutter_map_marker_cluster: ^1.3.6
+  flutter_map_heatmap: ^0.0.7
 
 dev_dependencies:
   flutter_test:
