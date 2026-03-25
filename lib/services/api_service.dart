@@ -118,6 +118,63 @@ class ApiService {
     }
   }
 
+  // --- Register a New Admin (SuperAdmin Only) ---
+  static Future<bool> registerAdmin(String email, String password, String nationalId) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/Auth/RegisterAdmin'), // <-- Uses the Admin endpoint
+        headers: {
+          'Content-Type': 'application/json', 
+          'Accept-Language': 'en',
+          'Authorization': 'Bearer $_token' // Needs the SuperAdmin's token!
+        },
+        body: jsonEncode({
+          "email": email,
+          "password": password,
+          "nationalId": nationalId 
+        }),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        debugPrint("✅ Admin successfully registered!");
+        return true;
+      }
+
+      debugPrint("❌ Admin Registration failed: ${response.statusCode} - ${response.body}");
+      return false;
+    } catch (e) {
+      debugPrint("❌ Internet error during admin registration: $e");
+      return false;
+    }
+  }
+
+  // --- Change Hazard Status (Admin/SuperAdmin) ---
+  static Future<bool> updateHazardStatus(String hazardId, int newStatusId) async {
+    if (_token == null) return false;
+
+    try {
+      final response = await http.patch(
+        Uri.parse('$baseUrl/Hazards/$hazardId/status/$newStatusId'),
+        headers: {
+          'Authorization': 'Bearer $_token',
+          'Accept-Language': 'en',
+          'Content-Type': 'application/json'
+        },
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        debugPrint("✅ Status updated to $newStatusId successfully!");
+        return true;
+      }
+
+      debugPrint("❌ Failed to update status: ${response.statusCode} - Body: ${response.body}");
+      return false;
+    } catch (e) {
+      debugPrint("❌ Internet error updating status: $e");
+      return false;
+    }
+  }
+
   // B. Fetch all hazards for the map
   static Future<List<Hazard>> fetchHazards() async {
     if (_token == null) {

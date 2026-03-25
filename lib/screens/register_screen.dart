@@ -1,6 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl_phone_field/intl_phone_field.dart';
 import '../services/api_service.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -18,6 +19,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final TextEditingController _passwordController = TextEditingController();
   
   bool _isLoading = false;
+  String _fullPhoneNumber = ''; // Stores the complete number (code + phone)
 
   void _handleRegister() async {
     final isArabic = widget.language == 'ar';
@@ -50,6 +52,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     String syntheticEmail = "${_nationalIdController.text.trim()}@rased.com";
     
     print("🚀 Sending to database as: $syntheticEmail");
+
+    // NOTE: When the backend is ready for phone numbers, I will use _fullPhoneNumber here!
 
     // 4. Send ALL THREE fields to the API!
     bool success = await ApiService.registerUser(
@@ -93,14 +97,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
         return Theme(
           data: Theme.of(context).copyWith(
             colorScheme: const ColorScheme.dark(
-              primary: Color(0xFFFFD700), // Header background color
-              onPrimary: Colors.black,    // Header text color
-              surface: Color(0xFF1E1E1E), // Background color
-              onSurface: Colors.white,    // Calendar text color
+              primary: Color(0xFFFFD700),
+              onPrimary: Colors.black,
+              surface: Color(0xFF1E1E1E),
+              onSurface: Colors.white,
             ),
             textButtonTheme: TextButtonThemeData(
               style: TextButton.styleFrom(
-                foregroundColor: const Color(0xFFFFD700), // OK/Cancel button color
+                foregroundColor: const Color(0xFFFFD700),
               ),
             ),
           ),
@@ -215,12 +219,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
                             readOnly: true,
                             onTap: () => _selectDate(context),
                           ),
-                          _buildTextField(
-                            controller: _phoneController,
-                            label: isArabic ? "رقم الهاتف" : "Phone Number",
-                            icon: Icons.phone,
-                            keyboardType: TextInputType.phone,
+                          
+                          // --- INTL PHONE FIELD WITH FLAGS ---
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 16.0),
+                            child: IntlPhoneField(
+                              controller: _phoneController,
+                              dropdownIcon: const Icon(Icons.arrow_drop_down, color: Color(0xFFFFD700)),
+                              dropdownTextStyle: const TextStyle(color: Colors.white, fontSize: 16),
+                              style: const TextStyle(color: Colors.white),
+                              initialCountryCode: 'JO', // Defaults to Jordan flag!
+                              decoration: InputDecoration(
+                                labelText: isArabic ? "رقم الهاتف" : "Phone Number",
+                                labelStyle: const TextStyle(color: Colors.white54),
+                                enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.2)), borderRadius: BorderRadius.circular(10)),
+                                focusedBorder: OutlineInputBorder(borderSide: const BorderSide(color: Color(0xFFFFD700)), borderRadius: BorderRadius.circular(10)),
+                              ),
+                              onChanged: (phone) {
+                                _fullPhoneNumber = phone.completeNumber;
+                              },
+                            ),
                           ),
+
                           _buildTextField(
                             controller: _passwordController,
                             label: isArabic ? "كلمة المرور" : "Password",

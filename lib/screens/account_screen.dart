@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import 'login_screen.dart';
 import 'profile_details_screen.dart';
+import 'admin_dashboard_screen.dart';
 
 class AccountScreen extends StatefulWidget {
   final String language;
@@ -71,7 +72,6 @@ class _AccountScreenState extends State<AccountScreen> {
             // --- 1. User Header ---
             InkWell(
               onTap: () {
-                // Navigate to the new Profile Details Screen!
                 Navigator.push(
                   context,
                   MaterialPageRoute(
@@ -200,8 +200,36 @@ class _AccountScreenState extends State<AccountScreen> {
             ]),
             const SizedBox(height: 24),
 
-            // --- 4. Logout Section ---
+            // --- 4. System Actions (Admin & Logout) ---
             _buildCard([
+              // 🔴 SECRET ADMIN BUTTON: Only shows if the user is an Admin or SuperAdmin
+              if (ApiService.loggedInRole == 'Admin' || ApiService.loggedInRole == 'SuperAdmin') ...[
+                ListTile(
+                  leading: const Icon(Icons.admin_panel_settings, color: Color(0xFFFFD700)),
+                  title: Text(
+                    isArabic ? "لوحة التحكم" : "Control Panel",
+                    style: const TextStyle(
+                      color: Color(0xFFFFD700),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  trailing: Icon(
+                    isArabic ? Icons.chevron_left : Icons.chevron_right,
+                    color: Colors.white54,
+                  ),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const AdminDashboardScreen(),
+                      ),
+                    );
+                  },
+                ),
+                _buildDivider(),
+              ],
+
+              // 🔴 STANDARD LOGOUT BUTTON
               ListTile(
                 leading: const Icon(Icons.logout, color: Colors.redAccent),
                 title: Text(
