@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'map_screen.dart';
 import '../services/api_service.dart';
 import 'package:country_picker/country_picker.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -508,6 +509,34 @@ class _LoginScreenState extends State<LoginScreen> {
                                       ),
                                     ),
                             ),
+                          ),
+
+                          // --- NEW: CREATE ACCOUNT LINK ---
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                isArabic ? "ليس لديك حساب؟" : "Don't have an account?",
+                                style: const TextStyle(color: Colors.white70),
+                              ),
+                              TextButton(
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => RegisterScreen(language: _language),
+                                    ),
+                                  );
+                                },
+                                child: Text(
+                                  isArabic ? "إنشاء حساب" : "Register",
+                                  style: const TextStyle(
+                                    color: Color(0xFFFFD700),
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
