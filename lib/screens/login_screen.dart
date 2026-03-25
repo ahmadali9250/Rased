@@ -4,6 +4,7 @@ import 'map_screen.dart';
 import '../services/api_service.dart';
 import 'package:country_picker/country_picker.dart';
 import 'register_screen.dart';
+import 'package:flutter/services.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -35,8 +36,8 @@ class _LoginScreenState extends State<LoginScreen> {
         SnackBar(
           content: Text(
             isArabic
-                ? 'الرجاء إدخال البريد الإلكتروني وكلمة المرور'
-                : 'Please enter an email and password',
+                ? 'الرجاء إدخال الرقم الوطني وكلمة المرور'
+                : 'Please enter your National ID and password',
           ),
           backgroundColor: Colors.red,
         ),
@@ -46,16 +47,20 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => _isLoading = true);
 
-    // 2. Actually ask the database if the password is correct!
+    // 2. THE MAGIC TRICK: Append @rased.com to the National ID
+    String syntheticEmail = "${_emailController.text.trim()}@rased.com";
+    print("🚀 Attempting to log in as: $syntheticEmail");
+
+    // 3. Actually ask the database if the password is correct!
     bool success = await ApiService.login(
-      _emailController.text.trim(),
+      syntheticEmail, // <-- Sending the fake email instead of just the numbers
       _passwordController.text.trim(),
     );
 
     if (!mounted) return;
     setState(() => _isLoading = false);
 
-    // 3. ONLY let them in if the database said "true"
+    // 4. ONLY let them in if the database said "true"
     if (success) {
       ApiService.currentLanguage = _language; // Save language globally
 
@@ -64,13 +69,13 @@ class _LoginScreenState extends State<LoginScreen> {
         MaterialPageRoute(builder: (context) => const MapScreen()),
       );
     } else {
-      // 4. Show the translated error message!
+      // 5. Show the translated error message!
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             isArabic
-                ? '❌ البريد الإلكتروني أو كلمة المرور غير صحيحة!'
-                : '❌ Invalid email or password!',
+                ? '❌ الرقم الوطني أو كلمة المرور غير صحيحة!'
+                : '❌ Invalid National ID or password!',
           ),
           backgroundColor: Colors.red,
         ),
@@ -399,19 +404,24 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       child: Column(
                         children: [
-                          // Email Field
+                          // National ID Field (Formerly Email)
                           TextField(
                             controller: _emailController,
                             style: const TextStyle(color: Colors.white),
+                            keyboardType: TextInputType.number, // <-- Opens the number pad!
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(10), // <-- Stops them at 10 digits
+                            ],
                             decoration: InputDecoration(
                               labelText: isArabic
-                                  ? "البريد الإلكتروني"
-                                  : "Email",
+                                  ? "الرقم الوطني"
+                                  : "National ID",
                               labelStyle: const TextStyle(
                                 color: Colors.white54,
                               ),
                               prefixIcon: const Icon(
-                                Icons.email,
+                                Icons.badge, // <-- Changed icon to a badge
                                 color: Colors.white54,
                               ),
                               enabledBorder: OutlineInputBorder(

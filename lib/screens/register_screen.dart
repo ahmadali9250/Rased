@@ -1,6 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../services/api_service.dart';
 
 class RegisterScreen extends StatefulWidget {
   final String language;
@@ -21,6 +22,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   void _handleRegister() async {
     final isArabic = widget.language == 'ar';
 
+    // 1. Validate the National ID
     if (_nationalIdController.text.length != 10) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -31,23 +33,52 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
+    // 2. Validate Password
+    if (_passwordController.text.isEmpty) {
+       ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isArabic ? 'يرجى إدخال كلمة المرور' : 'Please enter a password'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     setState(() => _isLoading = true);
 
-    // TODO: Connect this to ApiService.register() later!
-    await Future.delayed(const Duration(seconds: 2));
+    // 3. THE MAGIC TRICK: Create the synthetic email
+    String syntheticEmail = "${_nationalIdController.text.trim()}@rased.com";
+    
+    print("🚀 Sending to database as: $syntheticEmail");
+
+    // 4. Send ALL THREE fields to the API!
+    bool success = await ApiService.registerUser(
+      syntheticEmail,
+      _passwordController.text.trim(),
+      _nationalIdController.text.trim()
+    );
 
     if (!mounted) return;
     setState(() => _isLoading = false);
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(isArabic ? '✅ تم التسجيل بنجاح!' : '✅ Registration Successful!'),
-        backgroundColor: Colors.green,
-      ),
-    );
-    
-    // Go back to login screen
-    Navigator.pop(context);
+    if (success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isArabic ? '✅ تم التسجيل بنجاح!' : '✅ Registration Successful!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      
+      // Go back to the login screen so they can log in
+      Navigator.pop(context);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isArabic ? '❌ فشل التسجيل، قد يكون الرقم الوطني مسجلاً مسبقاً' : '❌ Registration failed. ID might already exist.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
 // --- CALENDAR POPUP ---

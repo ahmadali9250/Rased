@@ -92,6 +92,32 @@ class ApiService {
     }
   }
 
+  // --- Register a New User ---
+  static Future<bool> registerUser(String email, String password, String nationalId) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/Auth/RegisterUser'),
+        headers: {'Content-Type': 'application/json', 'Accept-Language': 'en'},
+        body: jsonEncode({
+          "email": email,
+          "password": password,
+          "nationalId": nationalId 
+        }),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        debugPrint("✅ Successfully registered!");
+        return true;
+      }
+
+      debugPrint("❌ Registration failed: ${response.statusCode} - ${response.body}");
+      return false;
+    } catch (e) {
+      debugPrint("❌ Internet error during registration: $e");
+      return false;
+    }
+  }
+
   // B. Fetch all hazards for the map
   static Future<List<Hazard>> fetchHazards() async {
     if (_token == null) {
