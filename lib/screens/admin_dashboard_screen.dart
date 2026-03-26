@@ -23,7 +23,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
   final TextEditingController _passwordController = TextEditingController();
   bool _isLoadingAuth = false;
 
-  String _fullPhoneNumber = '';
+  String _fullPhoneNumber = ''; // Stores the complete number (code + phone)
 
   // State for Reports Tab
   List<Hazard> _hazards = [];

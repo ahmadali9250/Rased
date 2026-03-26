@@ -4,8 +4,12 @@ import 'package:flutter/services.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
 import '../services/api_service.dart';
 
+/// The registration screen for new citizens to join the Rased (راصد) platform.
+///
+/// Collects the user's National ID, Date of Birth, Phone Number, and Password.
 class RegisterScreen extends StatefulWidget {
   final String language;
+  
   const RegisterScreen({super.key, required this.language});
 
   @override
@@ -13,23 +17,29 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
+  // --- Controllers ---
   final TextEditingController _nationalIdController = TextEditingController();
   final TextEditingController _dobController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   
+  // --- State Variables ---
   bool _isLoading = false;
-  String _fullPhoneNumber = ''; // Stores the complete number (code + phone)
+  
+  /// Stores the complete international phone number (e.g., +962791234567)
+  String _fullPhoneNumber = ''; 
 
+  /// Validates the form data and registers the user via the API.
   void _handleRegister() async {
     final isArabic = widget.language == 'ar';
 
-    // 1. Validate the National ID
+    // 1. Validate National ID
     if (_nationalIdController.text.length != 10) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(isArabic ? 'الرقم الوطني يجب أن يتكون من 10 أرقام' : 'National ID must be 10 digits'),
           backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating, // Floats cleanly over the UI
         ),
       );
       return;
@@ -41,6 +51,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         SnackBar(
           content: Text(isArabic ? 'يرجى إدخال كلمة المرور' : 'Please enter a password'),
           backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
         ),
       );
       return;
@@ -49,13 +60,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
     setState(() => _isLoading = true);
 
     // 3. THE MAGIC TRICK: Create the synthetic email
+    // The backend requires an email, so we dynamically generate one using their ID.
     String syntheticEmail = "${_nationalIdController.text.trim()}@rased.com";
-    
-    print("🚀 Sending to database as: $syntheticEmail");
+    debugPrint("🚀 Sending to database as: $syntheticEmail");
 
-    // NOTE: When the backend is ready for phone numbers, I will use _fullPhoneNumber here!
+    // TODO: When the C# backend is updated to accept phone and DOB, add them here!
+    // String userPhone = _fullPhoneNumber;
+    // String userDob = _dobController.text;
 
-    // 4. Send ALL THREE fields to the API!
+    // 4. Transmit data to the API
     bool success = await ApiService.registerUser(
       syntheticEmail,
       _passwordController.text.trim(),
@@ -70,22 +83,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
         SnackBar(
           content: Text(isArabic ? '✅ تم التسجيل بنجاح!' : '✅ Registration Successful!'),
           backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
         ),
       );
       
-      // Go back to the login screen so they can log in
-      Navigator.pop(context);
+      // 5. Return the ID back to the Login Screen for auto-fill!
+      Navigator.pop(context, _nationalIdController.text.trim());
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(isArabic ? '❌ فشل التسجيل، قد يكون الرقم الوطني مسجلاً مسبقاً' : '❌ Registration failed. ID might already exist.'),
           backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
         ),
       );
     }
   }
 
-// --- CALENDAR POPUP ---
+  /// Displays a native Material Date Picker styled with the app's dark/gold theme.
   Future<void> _selectDate(BuildContext context) async {
     final DateTime? picked = await showDatePicker(
       context: context,
@@ -93,18 +108,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
       firstDate: DateTime(1900),
       lastDate: DateTime.now(),
       builder: (context, child) {
-        
         return Theme(
           data: Theme.of(context).copyWith(
             colorScheme: const ColorScheme.dark(
-              primary: Color(0xFFFFD700),
-              onPrimary: Colors.black,
-              surface: Color(0xFF1E1E1E),
-              onSurface: Colors.white,
+              primary: Color(0xFFFFD700), // Header background color
+              onPrimary: Colors.black,    // Header text color
+              surface: Color(0xFF1E1E1E), // Background color
+              onSurface: Colors.white,    // Calendar text color
             ),
             textButtonTheme: TextButtonThemeData(
               style: TextButton.styleFrom(
-                foregroundColor: const Color(0xFFFFD700),
+                foregroundColor: const Color(0xFFFFD700), // OK/Cancel button color
               ),
             ),
           ),
@@ -113,7 +127,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       },
     );
 
-    // If they picked a date, format it and put it in the text box
+    // If a date was selected, format it to YYYY-MM-DD
     if (picked != null) {
       setState(() {
         String formattedDate = "${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}";
@@ -122,7 +136,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
-  // Quick helper to build identical text fields
+  /// A reusable helper widget to ensure all standard text fields share the exact same styling.
   Widget _buildTextField({
     required TextEditingController controller,
     required String label,
@@ -179,6 +193,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
+                // --- HEADER ---
                 const Icon(Icons.verified_user, size: 80, color: Color(0xFFFFD700)),
                 const SizedBox(height: 16),
                 Text(
@@ -192,6 +207,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 ),
                 const SizedBox(height: 30),
 
+                // --- REGISTRATION FORM CARD ---
                 ClipRRect(
                   borderRadius: BorderRadius.circular(20),
                   child: BackdropFilter(
@@ -248,6 +264,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                             isPassword: true,
                           ),
                           const SizedBox(height: 10),
+                          
+                          // --- SUBMIT BUTTON ---
                           SizedBox(
                             width: double.infinity,
                             height: 50,

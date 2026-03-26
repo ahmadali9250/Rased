@@ -4,8 +4,15 @@ import 'login_screen.dart';
 import 'profile_details_screen.dart';
 import 'admin_dashboard_screen.dart';
 
+/// The Account & Settings screen for the Rased application.
+///
+/// Provides user profile access, app preferences (language, location, notifications),
+/// help/support links, and access to the Admin Control Panel (if authorized).
 class AccountScreen extends StatefulWidget {
   final String language;
+  
+  /// Callback to notify the parent MapScreen that the language has changed,
+  /// triggering a full UI rebuild to swap between RTL/LTR.
   final VoidCallback onLanguageChanged;
 
   const AccountScreen({
@@ -19,9 +26,11 @@ class AccountScreen extends StatefulWidget {
 }
 
 class _AccountScreenState extends State<AccountScreen> {
+  // Local state for toggle switches (To be connected to SharedPreferences later)
   bool _locationEnabled = true;
   bool _notificationsEnabled = true;
 
+  /// Clears the user's session and navigates back to the Login Screen.
   void _handleLogout() {
     ApiService.logout();
 
@@ -46,9 +55,11 @@ class _AccountScreenState extends State<AccountScreen> {
   @override
   Widget build(BuildContext context) {
     final isArabic = widget.language == 'ar';
-    final String name =
-        ApiService.loggedInEmail?.split('@')[0] ??
-        (isArabic ? "مستخدم" : "User");
+    
+    // --- DYNAMIC USER DATA ---
+    // Extracts the National ID from our synthetic email (e.g., 1234567890@rased.com)
+    final String nationalId = ApiService.loggedInEmail?.split('@')[0] ?? "Unknown";
+    final String displayName = isArabic ? "مواطن" : "Citizen";
 
     return Directionality(
       textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
@@ -69,7 +80,9 @@ class _AccountScreenState extends State<AccountScreen> {
         body: ListView(
           padding: const EdgeInsets.all(16.0),
           children: [
-            // --- 1. User Header ---
+            // ==========================================
+            // 1. USER PROFILE HEADER
+            // ==========================================
             InkWell(
               onTap: () {
                 Navigator.push(
@@ -98,7 +111,7 @@ class _AccountScreenState extends State<AccountScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          name,
+                          displayName,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -108,8 +121,8 @@ class _AccountScreenState extends State<AccountScreen> {
                         const SizedBox(height: 4),
                         Text(
                           isArabic
-                              ? "الرقم الوطني: 1234567890"
-                              : "ID: 1234567890",
+                              ? "الرقم الوطني: $nationalId"
+                              : "ID: $nationalId",
                           style: const TextStyle(
                             color: Colors.white54,
                             fontSize: 14,
@@ -128,7 +141,9 @@ class _AccountScreenState extends State<AccountScreen> {
             ),
             const SizedBox(height: 24),
 
-            // --- 2. Settings Section ---
+            // ==========================================
+            // 2. SETTINGS SECTION
+            // ==========================================
             _buildSectionTitle(isArabic ? "الإعدادات" : "Settings"),
             _buildCard([
               _buildTile(
@@ -165,7 +180,9 @@ class _AccountScreenState extends State<AccountScreen> {
             ]),
             const SizedBox(height: 24),
 
-            // --- 3. Help & Support Section ---
+            // ==========================================
+            // 3. HELP & SUPPORT SECTION
+            // ==========================================
             _buildSectionTitle(isArabic ? "المساعدة والدعم" : "Help & Support"),
             _buildCard([
               _buildTile(
@@ -200,7 +217,9 @@ class _AccountScreenState extends State<AccountScreen> {
             ]),
             const SizedBox(height: 24),
 
-            // --- 4. System Actions (Admin & Logout) ---
+            // ==========================================
+            // 4. SYSTEM ACTIONS (ADMIN & LOGOUT)
+            // ==========================================
             _buildCard([
               // 🔴 SECRET ADMIN BUTTON: Only shows if the user is an Admin or SuperAdmin
               if (ApiService.loggedInRole == 'Admin' || ApiService.loggedInRole == 'SuperAdmin') ...[
@@ -242,6 +261,8 @@ class _AccountScreenState extends State<AccountScreen> {
                 onTap: _handleLogout,
               ),
             ]),
+            
+            // Padding to ensure you can scroll past the floating bottom navigation bar
             const SizedBox(height: 120),
           ],
         ),
@@ -253,6 +274,7 @@ class _AccountScreenState extends State<AccountScreen> {
   // HELPER WIDGETS
   // ==========================================
 
+  /// Builds the section headers (e.g., "Settings", "Help & Support")
   Widget _buildSectionTitle(String title) {
     return Padding(
       padding: const EdgeInsets.only(left: 8, right: 8, bottom: 12),
@@ -267,6 +289,7 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
+  /// Wraps a list of UI elements in a beautifully rounded, translucent glassmorphism card.
   Widget _buildCard(List<Widget> children) {
     return Container(
       decoration: BoxDecoration(
@@ -277,6 +300,7 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
+  /// Builds a standard clickable list item with an automatic RTL/LTR chevron arrow.
   Widget _buildTile(
     String title,
     bool isArabic, {
@@ -295,6 +319,7 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
+  /// Builds a list item containing a toggle switch for user preferences.
   Widget _buildSwitchTile(
     String title,
     bool value,
@@ -310,6 +335,7 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
+  /// A subtle internal divider to separate items within a card.
   Widget _buildDivider() {
     return const Divider(
       height: 1,

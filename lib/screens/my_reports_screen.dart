@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
 import '../services/api_service.dart';
 
+/// Displays a historical list of hazards specifically reported by the logged-in user.
 class MyReportsScreen extends StatefulWidget {
   const MyReportsScreen({super.key});
 
@@ -13,6 +14,7 @@ class MyReportsScreen extends StatefulWidget {
 class _MyReportsScreenState extends State<MyReportsScreen> {
   List<Hazard> _myReports = [];
   bool _isLoading = true;
+  late String _language = ApiService.currentLanguage;
 
   @override
   void initState() {
@@ -20,12 +22,24 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     _fetchMyReports();
   }
 
+  /// Fetches the reports and filters them for the current user.
   Future<void> _fetchMyReports() async {
+    // Fetches all hazards from the database
     final liveData = await ApiService.fetchHazards();
 
     if (mounted) {
       setState(() {
-        _myReports = liveData;
+        // =====================================================================
+        // TODO: BACKEND DATA FILTERING REQUIRED HERE
+        // Right now, the API returns ALL hazards. The backend needs to either:
+        // 1. Provide a specific endpoint for 'My Reports' (e.g., /Hazards/my)
+        // 2. Or add 'reporterEmail' to the Hazard JSON so we can filter locally like this:
+        //
+        // _myReports = liveData.where((h) => h.reporterEmail == ApiService.loggedInEmail).toList();
+        // =====================================================================
+        
+        // For now, we display the live data so the UI doesn't break.
+        _myReports = liveData; 
         _isLoading = false;
       });
     }
@@ -34,184 +48,207 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
   // --- Translates GPS to Street Names ---
   Future<String> _getAddress(double lat, double lng) async {
     try {
-      // Ask the internet what street this is!
       List<Placemark> placemarks = await placemarkFromCoordinates(lat, lng);
       if (placemarks.isNotEmpty) {
         Placemark place = placemarks.first;
-        // Combines the street name and the city (e.g., "Mecca St, Amman")
         return "${place.street}, ${place.locality}";
       }
     } catch (e) {
       debugPrint("Could not find address: $e");
     }
-    // If it fails, just return the raw numbers as a backup
     return "${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}";
+  }
+
+  /// Translates the Status ID from the database into a readable label.
+  String _getStatusText(int statusId, bool isArabic) {
+    switch (statusId) {
+      case 1: return isArabic ? 'قيد المراجعة' : 'Pending';
+      case 2: return isArabic ? 'قيد العمل' : 'In Progress';
+      case 3: return isArabic ? 'محلول' : 'Resolved';
+      case 4: return isArabic ? 'مرفوض' : 'Rejected (AI)';
+      default: return isArabic ? 'غير معروف' : 'Unknown';
+    }
+  }
+
+  /// Maps the Status ID to a specific color for the UI badge.
+  Color _getStatusColor(int statusId) {
+    switch (statusId) {
+      case 1: return const Color(0xFFFFD700); // Yellow/Gold
+      case 2: return Colors.blueAccent;       // Blue
+      case 3: return Colors.greenAccent;      // Green
+      case 4: return Colors.redAccent;        // Red
+      default: return Colors.grey;
+    }
+  }
+
+  /// Translates the Hazard Type ID from the database into a readable label.
+  String _getHazardName(int typeId, bool isArabic) {
+    switch (typeId) {
+      case 1: return isArabic ? 'حفرة' : 'Pothole';
+      case 2: return isArabic ? 'تشقق' : 'Crack';
+      case 3: return isArabic ? 'خطوط باهتة' : 'Faded Lines';
+      case 4: return isArabic ? 'مناهل مكسورة' : 'Broken Manhole';
+      default: return isArabic ? 'نوع غير معروف' : 'Unknown Hazard';
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text(
-          'My Reports',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 20,
-          ),
-        ),
-        centerTitle: true,
-      ),
+    final isArabic = _language == 'ar';
 
-      body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(color: Color(0xFFFFD700)),
-            )
-          : _myReports.isEmpty
-          ? const Center(
-              child: Text(
-                "No reports yet!",
-                style: TextStyle(color: Colors.white54),
-              ),
-            )
-          : ListView.builder(
-              physics: const BouncingScrollPhysics(),
-              padding: const EdgeInsets.only(
-                top: 20,
-                left: 20,
-                right: 20,
-                bottom: 120,
-              ),
-              itemCount: _myReports.length,
-              itemBuilder: (context, index) {
-                final report = _myReports[index];
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: _buildReportCard(report),
-                );
-              },
-            ),
+    return Directionality(
+      textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
+      child: Scaffold(
+        backgroundColor: const Color(0xFF121212),
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          iconTheme: const IconThemeData(color: Colors.white),
+          title: Text(
+            isArabic ? 'بلاغاتي' : 'My Reports',
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
+          ),
+          centerTitle: true,
+        ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFD700)))
+            : _myReports.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.receipt_long, size: 80, color: Colors.white24),
+                        const SizedBox(height: 16),
+                        Text(
+                          isArabic ? "لا توجد بلاغات حتى الآن!" : "No reports yet!",
+                          style: const TextStyle(color: Colors.white54, fontSize: 18),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    physics: const BouncingScrollPhysics(),
+                    padding: const EdgeInsets.only(top: 20, left: 16, right: 16, bottom: 120), // Bottom padding prevents FAB overlap
+                    itemCount: _myReports.length,
+                    itemBuilder: (context, index) {
+                      final report = _myReports[index];
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: _buildReportCard(report, isArabic),
+                      );
+                    },
+                  ),
+      ),
     );
   }
 
-  Widget _buildReportCard(Hazard report) {
-    final bool isResolved = report.statusId == 2;
-    final String typeName = report.typeId == 1
-        ? "Pothole"
-        : "Hazard Type ${report.typeId}";
+  /// Builds a beautifully styled glassmorphism card for a single report.
+  Widget _buildReportCard(Hazard report, bool isArabic) {
+    final String typeName = _getHazardName(report.typeId, isArabic);
+    final String statusText = _getStatusText(report.statusId, isArabic);
+    final Color statusColor = _getStatusColor(report.statusId);
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(15),
+      borderRadius: BorderRadius.circular(16),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.05),
-            borderRadius: BorderRadius.circular(15),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
           ),
-          child: Column(
+          child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    typeName,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isResolved
-                          ? Colors.green.withValues(alpha: 0.2)
-                          : const Color(0xFFFFD700).withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: isResolved
-                            ? Colors.green
-                            : const Color(0xFFFFD700),
-                      ),
-                    ),
-                    child: Text(
-                      isResolved ? 'Resolved' : 'Pending',
-                      style: TextStyle(
-                        color: isResolved
-                            ? Colors.greenAccent
-                            : const Color(0xFFFFD700),
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
+              // --- 1. IMAGE THUMBNAIL ---
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  width: 80,
+                  height: 80,
+                  color: Colors.black26,
+                  child: report.fullImageUrl != null
+                      ? Image.network(
+                          report.fullImageUrl!,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stack) => const Icon(Icons.broken_image, color: Colors.white38),
+                        )
+                      : const Icon(Icons.image_not_supported, color: Colors.white38),
+                ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(width: 16),
 
-              // --- The FutureBuilder for Location ---
-              Row(
-                children: [
-                  const Icon(
-                    Icons.location_on,
-                    color: Colors.white54,
-                    size: 16,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: FutureBuilder<String>(
-                      future: _getAddress(
-                        report.location.latitude,
-                        report.location.longitude,
-                      ),
-                      builder: (context, snapshot) {
-                        // While waiting for the internet...
-                        if (snapshot.connectionState ==
-                            ConnectionState.waiting) {
-                          return const Text(
-                            "Translating GPS...",
-                            style: TextStyle(
-                              color: Colors.white54,
-                              fontSize: 14,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          );
-                        }
-                        return Text(
-                          snapshot.data ?? "Location Unknown",
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 14,
+              // --- 2. REPORT DETAILS ---
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header Row: Hazard Name & Status Badge
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          typeName,
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: statusColor.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: statusColor),
                           ),
-                          overflow: TextOverflow.ellipsis,
-                        );
-                      },
+                          child: Text(
+                            statusText,
+                            style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
+                    const SizedBox(height: 12),
 
-              const SizedBox(height: 8),
-              const Row(
-                children: [
-                  Icon(Icons.calendar_today, color: Colors.white54, size: 16),
-                  SizedBox(width: 8),
-                  Text(
-                    "Reported Today",
-                    style: TextStyle(color: Colors.white70, fontSize: 14),
-                  ),
-                ],
+                    // Location Row with FutureBuilder
+                    Row(
+                      children: [
+                        const Icon(Icons.location_on, color: Colors.white54, size: 16),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: FutureBuilder<String>(
+                            future: _getAddress(report.location.latitude, report.location.longitude),
+                            builder: (context, snapshot) {
+                              if (snapshot.connectionState == ConnectionState.waiting) {
+                                return Text(
+                                  isArabic ? "جاري ترجمة الموقع..." : "Translating GPS...",
+                                  style: const TextStyle(color: Colors.white54, fontSize: 12, fontStyle: FontStyle.italic),
+                                );
+                              }
+                              return Text(
+                                snapshot.data ?? (isArabic ? "موقع غير معروف" : "Location Unknown"),
+                                style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                overflow: TextOverflow.ellipsis,
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Date Row
+                    Row(
+                      children: [
+                        const Icon(Icons.calendar_today, color: Colors.white54, size: 14),
+                        const SizedBox(width: 6),
+                        Text(
+                          isArabic ? "تم الإبلاغ حديثاً" : "Reported recently",
+                          style: const TextStyle(color: Colors.white54, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
