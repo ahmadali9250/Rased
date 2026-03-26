@@ -12,6 +12,7 @@ import 'my_reports_screen.dart';
 import '../services/api_service.dart';
 import 'account_screen.dart';
 import 'report_damage_screen.dart';
+import 'live_camera_screen.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -43,7 +44,7 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<Position>? _positionStream;
 
   // --- GOOGLE MAPS STYLE FILTER STATE ---
-  String _selectedMapStyle = 'default'; // 'default', 'satellite', 'terrain'
+  String _selectedMapStyle = 'default'; 
   
   bool _showHeatmap = true;
   bool _showPotholes = true;
@@ -131,6 +132,132 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  // ==========================================
+  // THE NEW DETECTION MODE MENU (OPTION 2)
+  // ==========================================
+  void _showDetectionModeDialog() {
+    final isArabic = _language == 'ar';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return Directionality(
+          textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40, height: 4, 
+                    decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))
+                  )
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  isArabic ? 'طريقة الرصد' : 'Detection Mode', 
+                  style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  isArabic ? 'كيف تود الإبلاغ عن الضرر؟' : 'How would you like to report the hazard?', 
+                  style: const TextStyle(color: Colors.white54, fontSize: 14)
+                ),
+                const SizedBox(height: 24),
+
+                // Option A: Live AI Camera
+                InkWell(
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const LiveCameraScreen()));
+                  },
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFD700).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFFFD700), width: 1.5),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: const BoxDecoration(color: Color(0xFFFFD700), shape: BoxShape.circle),
+                          child: const Icon(Icons.smart_toy, color: Colors.black, size: 28),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(isArabic ? 'الكاميرا الذكية (مباشر)' : 'Live AI Dashcam', style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 4),
+                              Text(isArabic ? 'تثبيت الهاتف في السيارة للرصد التلقائي' : 'Mount phone in car for auto-detection', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.chevron_right, color: Color(0xFFFFD700)),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Option B: Manual Photo
+                InkWell(
+                  onTap: () {
+                    Navigator.pop(context);
+                    // Opens your existing Manual Report screen!
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const ReportDamageScreen()));
+                  },
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white24, width: 1),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.1), shape: BoxShape.circle),
+                          child: const Icon(Icons.camera_alt, color: Colors.white, size: 28),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(isArabic ? 'إبلاغ يدوي' : 'Manual Photo Report', style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 4),
+                              Text(isArabic ? 'التقاط صورة للضرر بشكل يدوي' : 'Snap a picture of the hazard manually', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.chevron_right, color: Colors.white54),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 30),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isArabic = _language == 'ar';
@@ -154,12 +281,11 @@ class _MapScreenState extends State<MapScreen> {
 
     List<WeightedLatLng> heatmapPoints = filteredHazards.map((h) => WeightedLatLng(h.location, 1.0)).toList();
 
-    // --- OFFICIAL GOOGLE MAPS TILE URLS ---
-    String currentTileUrl = 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}'; // Default (Street)
+    String currentTileUrl = 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}'; 
     if (_selectedMapStyle == 'satellite') {
-      currentTileUrl = 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'; // Hybrid Satellite
+      currentTileUrl = 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'; 
     } else if (_selectedMapStyle == 'terrain') {
-      currentTileUrl = 'https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}'; // Terrain
+      currentTileUrl = 'https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}'; 
     }
 
     return Directionality(
@@ -176,7 +302,8 @@ class _MapScreenState extends State<MapScreen> {
             height: 80, width: 80,
             child: FloatingActionButton(
               heroTag: "detect_fab",
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const ReportDamageScreen())),
+              // --- Opens the choice menu! ---
+              onPressed: _showDetectionModeDialog,
               backgroundColor: const Color(0xFFFFD700),
               elevation: 4, shape: const CircleBorder(),
               child: Column(
@@ -250,7 +377,6 @@ class _MapScreenState extends State<MapScreen> {
                       ),
                     ),
 
-                    // --- GOOGLE MAPS STYLE BLUE DOT ---
                     if (_myCurrentLocation != null)
                       MarkerLayer(
                         markers: [
@@ -261,21 +387,8 @@ class _MapScreenState extends State<MapScreen> {
                             child: Stack(
                               alignment: Alignment.center,
                               children: [
-                                // Pulsing Blue Aura
-                                Container(
-                                  width: 60, height: 60,
-                                  decoration: BoxDecoration(color: Colors.blue.withValues(alpha: 0.25), shape: BoxShape.circle),
-                                ),
-                                // Solid Blue Core with White Border
-                                Container(
-                                  width: 22, height: 22,
-                                  decoration: BoxDecoration(
-                                    color: Colors.blue[600], 
-                                    shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.white, width: 3),
-                                    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 4, spreadRadius: 1)],
-                                  ),
-                                ),
+                                Container(width: 60, height: 60, decoration: BoxDecoration(color: Colors.blue.withValues(alpha: 0.25), shape: BoxShape.circle)),
+                                Container(width: 22, height: 22, decoration: BoxDecoration(color: Colors.blue[600], shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 3), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 4, spreadRadius: 1)])),
                               ],
                             ),
                           ),
@@ -391,11 +504,9 @@ class _MapScreenState extends State<MapScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Handle Bar
                       Center(child: Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)))),
                       const SizedBox(height: 16),
                       
-                      // Header Row
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -405,7 +516,6 @@ class _MapScreenState extends State<MapScreen> {
                       ),
                       const SizedBox(height: 16),
                       
-                      // --- MAP TYPES (Google Style Grid Row) ---
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceAround,
                         children: [
@@ -419,7 +529,6 @@ class _MapScreenState extends State<MapScreen> {
                       const Divider(color: Colors.white24),
                       const SizedBox(height: 16),
 
-                      // --- MAP DETAILS (Google Style Grid) ---
                       Text(isArabic ? 'تفاصيل الخريطة' : 'Map details', style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 16),
                       
@@ -428,14 +537,12 @@ class _MapScreenState extends State<MapScreen> {
                         runSpacing: 20,
                         alignment: WrapAlignment.start,
                         children: [
-                          // Hazards
                           _buildDetailCard(isArabic ? 'حرارية' : 'Heatmap', _showHeatmap, () { setModalState(() => _showHeatmap = !_showHeatmap); setState((){}); }, '🔥'),
                           _buildDetailCard(isArabic ? 'حفر ($potholeCount)' : 'Potholes', _showPotholes, () { setModalState(() => _showPotholes = !_showPotholes); setState((){}); }, '🕳️'),
                           _buildDetailCard(isArabic ? 'تشقق ($crackCount)' : 'Cracks', _showCracks, () { setModalState(() => _showCracks = !_showCracks); setState((){}); }, '⚡'),
                           _buildDetailCard(isArabic ? 'باهتة ($fadedLinesCount)' : 'Faded', _showFadedLines, () { setModalState(() => _showFadedLines = !_showFadedLines); setState((){}); }, '〰️'),
                           _buildDetailCard(isArabic ? 'مناهل ($manholeCount)' : 'Manholes', _showBrokenManholes, () { setModalState(() => _showBrokenManholes = !_showBrokenManholes); setState((){}); }, '🚧'),
                           
-                          // Severities
                           _buildDetailCard(isArabic ? 'عالية' : 'High', _showHighSeverity, () { setModalState(() => _showHighSeverity = !_showHighSeverity); setState((){}); }, '🔴'),
                           _buildDetailCard(isArabic ? 'متوسطة' : 'Medium', _showMediumSeverity, () { setModalState(() => _showMediumSeverity = !_showMediumSeverity); setState((){}); }, '🟡'),
                           _buildDetailCard(isArabic ? 'منخفضة' : 'Low', _showLowSeverity, () { setModalState(() => _showLowSeverity = !_showLowSeverity); setState((){}); }, '🟢'),
@@ -453,13 +560,12 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  // --- FILTER MENU HELPER WIDGETS ---
   Widget _buildMapTypeCard(String title, String value, IconData icon, StateSetter setModalState) {
     bool isSelected = _selectedMapStyle == value;
     return GestureDetector(
       onTap: () {
         setModalState(() => _selectedMapStyle = value);
-        setState(() {}); // Update the map behind the modal
+        setState(() {}); 
       },
       child: Column(
         children: [
