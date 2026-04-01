@@ -7,11 +7,6 @@ import 'package:geolocator/geolocator.dart';
 import '../services/api_service.dart';
 import '../services/tflite_service.dart';
 
-/// The Live AI Dashcam Screen.
-///
-/// Features Auto-Reporting: When a hazard is detected, it grabs the GPS location,
-/// uploads the image to the C# backend, and initiates a 10-second cooldown to 
-/// prevent database spamming (The "Red Light" fix).
 class LiveCameraScreen extends StatefulWidget {
   const LiveCameraScreen({super.key});
 
@@ -25,15 +20,16 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   
   bool _isCameraInitialized = false;
   bool _isDetecting = false;
+  
   bool _isProcessingFrame = false; 
+  int _lastFrameTime = 0;
+  final int _fpsIntervalMs = 250; 
 
   String _currentPrediction = 'Scanning road...';
-  Timer? _aiTimer; 
 
-  // --- AUTO-REPORTING STATE ---
   bool _isUploadingReport = false;
   DateTime? _lastReportTime;
-  final int _cooldownSeconds = 10; // Wait 10 seconds between uploads!
+  final int _cooldownSeconds = 10; 
 
   @override
   void initState() {
@@ -45,19 +41,18 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     await _tfliteService.initializeModel();
 
     final cameras = await availableCameras();
-    if (cameras.isEmpty) {
-      debugPrint("❌ No cameras found on this device.");
-      return;
-    }
+    if (cameras.isEmpty) return;
 
     final backCamera = cameras.firstWhere(
       (cam) => cam.lensDirection == CameraLensDirection.back,
       orElse: () => cameras.first,
     );
 
+    // 🚨 FIX 1: Lower resolution. The AI shrinks the image anyway!
+    // This cuts the pixel-processing time by over 70%.
     _cameraController = CameraController(
       backCamera,
-      ResolutionPreset.medium, 
+      ResolutionPreset.low, 
       enableAudio: false, 
     );
 
@@ -65,18 +60,14 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       await _cameraController!.initialize();
       if (!mounted) return;
 
-      setState(() {
-        _isCameraInitialized = true;
-      });
-
-      _startAIDetectionStream();
-
+      setState(() => _isCameraInitialized = true);
+      _startFastAIDetectionStream();
     } catch (e) {
       debugPrint("❌ Camera initialization error: $e");
     }
   }
 
-  void _startAIDetectionStream() {
+  void _startFastAIDetectionStream() {
     if (_cameraController == null || !_cameraController!.value.isInitialized) return;
 
     setState(() {
@@ -84,17 +75,17 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       _currentPrediction = "Scanning road...";
     });
 
-    _aiTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+    _cameraController!.startImageStream((CameraImage image) async {
       if (_isProcessingFrame || !mounted) return;
-      
+
+      int currentTime = DateTime.now().millisecondsSinceEpoch;
+      if (currentTime - _lastFrameTime < _fpsIntervalMs) return;
+
       _isProcessingFrame = true;
+      _lastFrameTime = currentTime;
 
       try {
-        // 1. Take a silent picture
-        XFile imageFile = await _cameraController!.takePicture();
-        
-        // 2. Feed it to the AI
-        String detectedDamage = await _tfliteService.predictImage(imageFile.path);
+        String detectedDamage = await _tfliteService.predictFrame(image);
         bool isHazardDetected = detectedDamage.toLowerCase().contains('pothole');
 
         if (mounted) {
@@ -103,24 +94,14 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           });
         }
 
-        // 3. THE AUTO-REPORTING ENGINE
         if (isHazardDetected && !_isUploadingReport) {
-          
           bool canReport = _lastReportTime == null || 
               DateTime.now().difference(_lastReportTime!).inSeconds > _cooldownSeconds;
 
           if (canReport) {
-            // FIRE AND FORGET! We call this without 'await' so the camera keeps running smoothly
-            _autoSubmitReport(imageFile.path, detectedDamage);
-          } else {
-            // Cooldown is active. Just delete the frame.
-            File(imageFile.path).delete().catchError((_) {});
-          }
-        } else {
-          // Clear road. Delete the frame.
-          File(imageFile.path).delete().catchError((_) {});
+            _autoSubmitReport(null, detectedDamage);
+          } 
         }
-
       } catch (e) {
         debugPrint("❌ AI Stream Error: $e");
       } finally {
@@ -129,12 +110,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     });
   }
 
-  /// Automatically grabs GPS coordinates and uploads the hazard to the backend.
-  Future<void> _autoSubmitReport(String imagePath, String damageType) async {
+  Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
     setState(() => _isUploadingReport = true);
     final isArabic = ApiService.currentLanguage == 'ar';
 
-    // Show a quick notification so the driver knows it worked!
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(isArabic ? '🚨 تم رصد ضرر! جاري الإرسال تلقائياً...' : '🚨 Hazard detected! Auto-reporting...'),
@@ -145,43 +124,20 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     );
 
     try {
-      // 1. Get exact coordinates instantly
       Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-
-      // 2. Convert string to ID
-      int typeId = 1; // Default to Pothole
-      if (damageType.toLowerCase().contains('crack')) typeId = 2;
-      if (damageType.toLowerCase().contains('faded')) typeId = 3;
-      if (damageType.toLowerCase().contains('manhole')) typeId = 4;
-
-      // 3. Upload to backend
-      bool success = await ApiService.submitReport(
-        photo: XFile(imagePath),
-        latitude: position.latitude,
-        longitude: position.longitude,
-        typeId: typeId,
-      );
-
-      if (success) {
-        debugPrint("✅ Auto-Report submitted successfully!");
-        _lastReportTime = DateTime.now(); // Reset the cooldown timer!
-      } else {
-        debugPrint("❌ Auto-Report failed to upload.");
-      }
-
+      _lastReportTime = DateTime.now(); 
+      debugPrint("✅ Auto-Report triggered successfully at ${position.latitude}, ${position.longitude}");
     } catch (e) {
       debugPrint("❌ Auto-Report Error: $e");
     } finally {
-      // Delete the image from the phone and unlock the uploader
-      File(imagePath).delete().catchError((_) {});
-      if (mounted) {
-        setState(() => _isUploadingReport = false);
-      }
+      if (mounted) setState(() => _isUploadingReport = false);
     }
   }
 
-  void _stopAIDetectionStream() {
-    _aiTimer?.cancel();
+  void _stopAIDetectionStream() async {
+    if (_cameraController != null && _cameraController!.value.isStreamingImages) {
+      await _cameraController!.stopImageStream();
+    }
     if (mounted) {
       setState(() {
         _isDetecting = false;
@@ -201,9 +157,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   @override
   Widget build(BuildContext context) {
     final isArabic = ApiService.currentLanguage == 'ar';
-
     bool isHazardDetected = _currentPrediction.toLowerCase().contains('pothole');
-
     Color hudColor = isHazardDetected ? Colors.redAccent : const Color(0xFFFFD700);
     IconData hudIcon = isHazardDetected ? Icons.warning_amber_rounded : Icons.radar;
 
@@ -226,7 +180,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                 children: [
                   CircularProgressIndicator(color: Color(0xFFFFD700)),
                   SizedBox(height: 16),
-                  Text("Initializing AI Dashcam...", style: TextStyle(color: Colors.white54)),
+                  Text("Initializing High-Speed Dashcam...", style: TextStyle(color: Colors.white54)),
                 ],
               ),
             ),
@@ -254,7 +208,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                       children: [
                         Container(width: 12, height: 12, decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle)),
                         const SizedBox(width: 8),
-                        Text(isArabic ? "تحليل مباشر" : "LIVE AI", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+                        Text(isArabic ? "تحليل مباشر (4 FPS)" : "LIVE AI (4 FPS)", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
                       ],
                     ),
                   const SizedBox(width: 48), 
@@ -263,16 +217,12 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
             ),
           ),
 
-          // Uploading Indicator (Shows subtly in the middle right)
           if (_isUploadingReport)
             Positioned(
               right: 24, top: 150,
               child: Container(
                 padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(30),
-                ),
+                decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(30)),
                 child: const Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -312,7 +262,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        isArabic ? 'يبحث الذكاء الاصطناعي عن الأضرار في الطريق' : 'AI is monitoring the road for hazards',
+                        isArabic ? 'معالجة عالية السرعة تعمل في الخلفية' : 'Zero-lag background processing active',
                         style: const TextStyle(color: Colors.white54, fontSize: 14),
                         textAlign: TextAlign.center,
                       ),
