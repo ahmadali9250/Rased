@@ -54,7 +54,7 @@ class TFLiteService {
 
     try {
       // We pass the interpreter pointer address into the background thread!
-      // This means 100% of the heavy math happens off the UI thread.
+      // This means 100% of the heavy YOLO11 math happens off the UI thread.
       final String result = await compute(_processAndRunAIInBackground, {
         'format': cameraImage.format.group == ImageFormatGroup.yuv420 ? 'yuv420' : 'bgra8888',
         'width': cameraImage.width,
@@ -67,7 +67,7 @@ class TFLiteService {
         'uvPixelStride': cameraImage.planes.length > 1 ? cameraImage.planes[1].bytesPerPixel : 0,
         'inputWidth': _inputWidth,
         'inputHeight': _inputHeight,
-        'interpreterAddress': _interpreter!.address, // <-- The Magic Pointer!
+        'interpreterAddress': _interpreter!.address, 
         'labels': _labels,
       });
 
@@ -121,7 +121,6 @@ class TFLiteService {
 
       if (image == null) return "Clear Road";
 
-      // Reconnect to the AI brain inside this background thread
       int address = params['interpreterAddress'];
       var isolateInterpreter = Interpreter.fromAddress(address);
       List<String> labels = params['labels'];
@@ -133,7 +132,7 @@ class TFLiteService {
   }
 
   // ==========================================
-  // CORE AI MATH EXECUTION
+  // CORE YOLO11 MATH EXECUTION
   // ==========================================
   static String _runInterpreter(img.Image image, Interpreter interpreter, List<String> labels) {
     var inputShape = interpreter.getInputTensor(0).shape;
@@ -177,8 +176,7 @@ class TFLiteService {
       maxConfidence = parsedOutput[0][0];
     }
 
-    // INCREASED TO 70% FOR DASHCAM ACCURACY!
-    if (maxConfidence > 0.70) {
+    if (maxConfidence > 0.50) {
       return labels.isNotEmpty ? labels[0] : "Pothole";
     } else {
       return "Clear Road";
