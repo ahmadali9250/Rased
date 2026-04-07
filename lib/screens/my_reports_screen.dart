@@ -22,24 +22,13 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     _fetchMyReports();
   }
 
-  /// Fetches the reports and filters them for the current user.
+  /// FIXED: Now explicitly calls the backend developer's new 'my-reports' endpoint!
   Future<void> _fetchMyReports() async {
-    // Fetches all hazards from the database
-    final liveData = await ApiService.fetchHazards();
+    final myData = await ApiService.fetchMyReports();
 
     if (mounted) {
       setState(() {
-        // =====================================================================
-        // TODO: BACKEND DATA FILTERING REQUIRED HERE
-        // Right now, the API returns ALL hazards. The backend needs to either:
-        // 1. Provide a specific endpoint for 'My Reports' (e.g., /Hazards/my)
-        // 2. Or add 'reporterEmail' to the Hazard JSON so we can filter locally like this:
-        //
-        // _myReports = liveData.where((h) => h.reporterEmail == ApiService.loggedInEmail).toList();
-        // =====================================================================
-        
-        // For now, we display the live data so the UI doesn't break.
-        _myReports = liveData; 
+        _myReports = myData; 
         _isLoading = false;
       });
     }

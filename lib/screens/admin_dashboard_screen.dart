@@ -2,14 +2,9 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
-import 'package:geocoding/geocoding.dart'; // <-- NEW: For translating coordinates to addresses!
+import 'package:geocoding/geocoding.dart';
 import '../services/api_service.dart';
 
-/// The Central Command Dashboard for Admins and SuperAdmins.
-///
-/// Features two main tabs:
-/// 1. Report Management: View, filter, and change the status of citizen hazard reports.
-/// 2. User Management: Register new Citizens, or (if SuperAdmin) register new Admins.
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
 
@@ -27,18 +22,19 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
   // ==========================================
   List<Hazard> _hazards = [];
   bool _isLoadingReports = true;
-  int _selectedFilterStatus = 0; // 0 = All, 2 = In Progress, 3 = Resolved, 4 = AI Error
+  int _selectedFilterStatus = 0; // 0 = All, 1 = Pending, 2 = In Progress
 
   // ==========================================
   // TAB 2 STATE: USER MANAGEMENT
   // ==========================================
+  final TextEditingController _nameController = TextEditingController();
   final TextEditingController _nationalIdController = TextEditingController();
   final TextEditingController _dobController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   
   bool _isLoadingAuth = false;
-  String _fullPhoneNumber = ''; // Stores the complete intl number (e.g., +962791234567)
+  String _fullPhoneNumber = ''; 
 
   @override
   void initState() {
@@ -47,10 +43,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
     _loadReports();
   }
 
-  /// Fetches the global list of hazards from the backend.
+  /// Uses the backend's high-efficiency 'unsolved' endpoint!
   Future<void> _loadReports() async {
     setState(() => _isLoadingReports = true);
-    final data = await ApiService.fetchHazards();
+    final data = await ApiService.fetchUnsolvedHazards(); 
     
     if (mounted) {
       setState(() {
@@ -63,20 +59,17 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
   // ==========================================
   // TAB 1: REPORT MANAGEMENT UI
   // ==========================================
-  
   Widget _buildReportsTab() {
     if (_isLoadingReports) {
       return const Center(child: CircularProgressIndicator(color: Color(0xFFFFD700)));
     }
 
-    // Apply the active filter (All vs In Progress vs Resolved)
     List<Hazard> displayHazards = _selectedFilterStatus == 0 
         ? _hazards 
         : _hazards.where((h) => h.statusId == _selectedFilterStatus).toList();
 
     return Column(
       children: [
-        // --- HORIZONTAL FILTER BAR ---
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -84,16 +77,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
             children: [
               _filterChip(0, isArabic ? 'الكل' : 'All', Colors.white),
               const SizedBox(width: 8),
+              _filterChip(1, isArabic ? 'قيد المراجعة' : 'Pending', const Color(0xFFFFD700)),
+              const SizedBox(width: 8),
               _filterChip(2, isArabic ? 'قيد العمل' : 'In Progress', Colors.blue),
-              const SizedBox(width: 8),
-              _filterChip(3, isArabic ? 'محلول' : 'Resolved', Colors.green),
-              const SizedBox(width: 8),
-              _filterChip(4, isArabic ? 'خطأ ذكاء اصطناعي' : 'AI Error', Colors.red),
             ],
           ),
         ),
         
-        // --- LIST OF REPORTS ---
         Expanded(
           child: displayHazards.isEmpty
               ? Center(
@@ -102,7 +92,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                     children: [
                       const Icon(Icons.check_circle_outline, size: 80, color: Colors.white24),
                       const SizedBox(height: 16),
-                      Text(isArabic ? 'لا توجد بلاغات حالياً' : 'No reports found', style: const TextStyle(color: Colors.white54, fontSize: 18)),
+                      Text(isArabic ? 'لا توجد بلاغات غير محلولة حالياً' : 'No unsolved reports found', style: const TextStyle(color: Colors.white54, fontSize: 18)),
                     ],
                   )
                 )
@@ -119,7 +109,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
     );
   }
 
-  /// Builds a comprehensive, interactive card for an admin to review a specific hazard.
   Widget _buildAdminReportCard(Hazard hazard) {
     final String typeName = _getHazardName(hazard.typeId, isArabic);
     final String statusText = _getStatusText(hazard.statusId, isArabic);
@@ -137,51 +126,33 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header Row: Type & Status
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  typeName, 
-                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)
-                ),
+                Text(typeName, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: statusColor.withValues(alpha: 0.2), 
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: statusColor),
-                  ),
-                  child: Text(
-                    statusText, 
-                    style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 12)
-                  ),
+                  decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(20), border: Border.all(color: statusColor)),
+                  child: Text(statusText, style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 12)),
                 )
               ],
             ),
             const SizedBox(height: 16),
 
-            // Main Content Row: Image + Details
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Image Thumbnail
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: Container(
-                    width: 100, height: 100,
-                    color: Colors.black26,
+                    width: 100, height: 100, color: Colors.black26,
                     child: hazard.fullImageUrl != null
-                        ? Image.network(
-                            hazard.fullImageUrl!, fit: BoxFit.cover,
-                            errorBuilder: (context, error, stack) => const Icon(Icons.broken_image, color: Colors.white38),
-                          )
+                        ? Image.network(hazard.fullImageUrl!, fit: BoxFit.cover, errorBuilder: (context, error, stack) => const Icon(Icons.broken_image, color: Colors.white38))
                         : const Icon(Icons.image_not_supported, color: Colors.white38),
                   ),
                 ),
                 const SizedBox(width: 16),
 
-                // Details Column
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -189,7 +160,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                       Text('ID: ${hazard.id.substring(0, 8)}...', style: const TextStyle(color: Colors.white54, fontSize: 12, fontFamily: 'monospace')),
                       const SizedBox(height: 8),
                       
-                      // Translated Address!
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -199,9 +169,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                             child: FutureBuilder<String>(
                               future: _getAddress(hazard.location.latitude, hazard.location.longitude),
                               builder: (context, snapshot) {
-                                if (snapshot.connectionState == ConnectionState.waiting) {
-                                  return Text(isArabic ? 'جاري ترجمة الموقع...' : 'Translating GPS...', style: const TextStyle(color: Colors.white54, fontSize: 12, fontStyle: FontStyle.italic));
-                                }
+                                if (snapshot.connectionState == ConnectionState.waiting) return Text(isArabic ? 'جاري ترجمة الموقع...' : 'Translating GPS...', style: const TextStyle(color: Colors.white54, fontSize: 12, fontStyle: FontStyle.italic));
                                 return Text(snapshot.data ?? 'Unknown', style: const TextStyle(color: Colors.white70, fontSize: 13));
                               },
                             ),
@@ -214,10 +182,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                         children: [
                           const Icon(Icons.people, color: Color(0xFFFFD700), size: 16),
                           const SizedBox(width: 4),
-                          Text(
-                            isArabic ? 'عدد التبليغات: ${hazard.detectionCount}' : 'Reports: ${hazard.detectionCount}', 
-                            style: const TextStyle(color: Colors.white70, fontSize: 13)
-                          ),
+                          Text(isArabic ? 'عدد التبليغات: ${hazard.detectionCount}' : 'Reports: ${hazard.detectionCount}', style: const TextStyle(color: Colors.white70, fontSize: 13)),
                         ],
                       ),
                     ],
@@ -230,7 +195,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
             const Divider(color: Colors.white24),
             const SizedBox(height: 12),
 
-            // Action Buttons
             Text(isArabic ? 'تحديث حالة البلاغ:' : 'Update Status:', style: const TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             Wrap(
@@ -250,7 +214,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
   // ==========================================
   // TAB 2: USER MANAGEMENT UI
   // ==========================================
-  
   Widget _buildUsersTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -268,6 +231,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
           Text(isArabic ? "يرجى إدخال البيانات كما هي في الهوية" : "Please enter details exactly as on ID", style: const TextStyle(color: Colors.white54, fontSize: 14)),
           const SizedBox(height: 30),
           
+          // 🚨 FIXED: Name Field Added
+          _buildTextField(
+            controller: _nameController,
+            label: isArabic ? "الاسم الكامل" : "Full Name",
+            icon: Icons.person,
+          ),
           _buildTextField(
             controller: _nationalIdController,
             label: isArabic ? "الرقم الوطني (10 أرقام)" : "National ID (10 digits)",
@@ -283,7 +252,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
             onTap: () => _selectDate(context),
           ),
           
-          // Official Standardized Phone Field
           Padding(
             padding: const EdgeInsets.only(bottom: 16.0),
             child: IntlPhoneField(
@@ -313,7 +281,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
           
           const SizedBox(height: 30),
           
-          // Action Buttons
           _isLoadingAuth 
             ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFD700)))
             : Column(
@@ -328,7 +295,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                   ),
                   const SizedBox(height: 16),
                   
-                  // Only SuperAdmins can mint other Admins!
                   if (isSuperAdmin)
                     SizedBox(
                       width: double.infinity, height: 50,
@@ -373,7 +339,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
         bool success = await ApiService.updateHazardStatus(id, newStatus);
         if (success) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ Status Updated!'), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating));
-          _loadReports(); // Refresh the list!
+          _loadReports(); 
         } else {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('❌ Failed to update status'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
         }
@@ -481,29 +447,33 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
     );
   }
 
+  /// 🚨 FIXED: Now sends all 5 arguments to the API Service!
   void _handleCreateAccount(bool isAdmin) async {
     final isArabic = ApiService.currentLanguage == 'ar';
 
-    if (_nationalIdController.text.length != 10 || _passwordController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? '❌ يرجى إدخال الرقم الوطني وكلمة المرور!' : '❌ Please enter a 10-digit ID and password.'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
+    if (_nameController.text.trim().isEmpty || _nationalIdController.text.length != 10 || _passwordController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? '❌ يرجى تعبئة جميع الحقول المطلوبة!' : '❌ Please fill all required fields!'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
       return;
     }
 
     setState(() => _isLoadingAuth = true);
     
     String syntheticEmail = "${_nationalIdController.text.trim()}@rased.com";
+    String fullName = _nameController.text.trim();
+    String phoneNumber = _fullPhoneNumber;
     
     bool success;
     if (isAdmin) {
-      success = await ApiService.registerAdmin(syntheticEmail, _passwordController.text.trim(), _nationalIdController.text.trim());
+      success = await ApiService.registerAdmin(syntheticEmail, _passwordController.text.trim(), _nationalIdController.text.trim(), fullName, phoneNumber);
     } else {
-      success = await ApiService.registerUser(syntheticEmail, _passwordController.text.trim(), _nationalIdController.text.trim());
+      success = await ApiService.registerUser(syntheticEmail, _passwordController.text.trim(), _nationalIdController.text.trim(), fullName, phoneNumber);
     }
 
     setState(() => _isLoadingAuth = false);
 
     if (success) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? '✅ تم إنشاء الحساب بنجاح!' : '✅ Account Created!'), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating));
+      _nameController.clear();
       _nationalIdController.clear();
       _passwordController.clear();
       _dobController.clear();
