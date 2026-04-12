@@ -176,7 +176,7 @@ class TFLiteService {
       maxConfidence = parsedOutput[0][0];
     }
 
-    if (maxConfidence > 0.50) {
+    if (maxConfidence > 0.25) {
       return labels.isNotEmpty ? labels[0] : "Pothole";
     } else {
       return "Clear Road";

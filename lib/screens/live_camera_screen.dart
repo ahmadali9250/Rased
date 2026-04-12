@@ -6,6 +6,8 @@ import 'package:camera/camera.dart';
 import 'package:geolocator/geolocator.dart';
 import '../services/api_service.dart';
 import '../services/tflite_service.dart';
+import '../widgets/bounding_box_painter.dart';
+import 'package:vibration/vibration.dart';
 
 class LiveCameraScreen extends StatefulWidget {
   const LiveCameraScreen({super.key});
@@ -20,7 +22,9 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   
   bool _isCameraInitialized = false;
   bool _isDetecting = false;
-  
+
+  List<Map<String, dynamic>> _detections = [];
+
   bool _isProcessingFrame = false; 
   int _lastFrameTime = 0;
   final int _fpsIntervalMs = 250; 
@@ -95,6 +99,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
         }
 
         if (isHazardDetected && !_isUploadingReport) {
+
+           if (await Vibration.hasVibrator() ?? false) {
+            Vibration.vibrate(duration: 400);
+          }
           bool canReport = _lastReportTime == null || 
               DateTime.now().difference(_lastReportTime!).inSeconds > _cooldownSeconds;
 
@@ -110,41 +118,44 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     });
   }
 
-  Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
-    setState(() => _isUploadingReport = true);
-    final isArabic = ApiService.currentLanguage == 'ar';
+Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
+  setState(() => _isUploadingReport = true);
+  final isArabic = ApiService.currentLanguage == 'ar';
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(isArabic ? '🚨 تم رصد ضرر! جاري الإرسال تلقائياً...' : '🚨 Hazard detected! Auto-reporting...'),
-        backgroundColor: Colors.orange,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
+  try {
+    Position position = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.high
+    );
+    _lastReportTime = DateTime.now();
+
+    // ✅ إضافة — الإرسال الفعلي للباك إند
+    int typeId = damageType.toLowerCase().contains('pothole') ? 0 :
+                 damageType.toLowerCase().contains('potholes') ? 1 :
+                 damageType.toLowerCase().contains('crack') ? 2 :
+                 damageType.toLowerCase().contains('manhole') ? 4 : 1;
+
+    bool success = await ApiService.submitLocationOnly(
+      latitude: position.latitude,
+      longitude: position.longitude,
+      typeId: typeId,
     );
 
-    try {
-      Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-      _lastReportTime = DateTime.now(); 
-      debugPrint("✅ Auto-Report triggered successfully at ${position.latitude}, ${position.longitude}");
-    } catch (e) {
-      debugPrint("❌ Auto-Report Error: $e");
-    } finally {
-      if (mounted) setState(() => _isUploadingReport = false);
-    }
-  }
-
-  void _stopAIDetectionStream() async {
-    if (_cameraController != null && _cameraController!.value.isStreamingImages) {
-      await _cameraController!.stopImageStream();
-    }
     if (mounted) {
-      setState(() {
-        _isDetecting = false;
-        _currentPrediction = 'AI Paused';
-      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(success
+          ? (isArabic ? '✅ تم إرسال البلاغ!' : '✅ Report sent!')
+          : (isArabic ? '❌ فشل الإرسال' : '❌ Failed to send')),
+        backgroundColor: success ? Colors.green : Colors.red,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ));
     }
+  } catch (e) {
+    debugPrint("❌ Auto-Report Error: $e");
+  } finally {
+    if (mounted) setState(() => _isUploadingReport = false);
   }
+}
 
   @override
   void dispose() {
@@ -175,6 +186,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
             CameraPreview(_cameraController!)
           else
             const Center(
+              CustomPaint(
+               painter: BoundingBoxPainter(detections: _detections),
+               child: Container(),
+                 ),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
