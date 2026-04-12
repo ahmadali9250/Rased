@@ -52,8 +52,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       orElse: () => cameras.first,
     );
 
-    // 🚨 FIX 1: Lower resolution. The AI shrinks the image anyway!
-    // This cuts the pixel-processing time by over 70%.
     _cameraController = CameraController(
       backCamera,
       ResolutionPreset.low, 
@@ -118,44 +116,55 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     });
   }
 
-Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
-  setState(() => _isUploadingReport = true);
-  final isArabic = ApiService.currentLanguage == 'ar';
+  Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
+    setState(() => _isUploadingReport = true);
+    final isArabic = ApiService.currentLanguage == 'ar';
 
-  try {
-    Position position = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high
-    );
-    _lastReportTime = DateTime.now();
+    try {
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high
+      );
+      _lastReportTime = DateTime.now();
 
-    // ✅ إضافة — الإرسال الفعلي للباك إند
-    int typeId = damageType.toLowerCase().contains('pothole') ? 0 :
-                 damageType.toLowerCase().contains('potholes') ? 1 :
-                 damageType.toLowerCase().contains('crack') ? 2 :
-                 damageType.toLowerCase().contains('manhole') ? 4 : 1;
+      int typeId = damageType.toLowerCase().contains('pothole') ? 0 :
+                   damageType.toLowerCase().contains('potholes') ? 1 :
+                   damageType.toLowerCase().contains('crack') ? 2 :
+                   damageType.toLowerCase().contains('manhole') ? 4 : 1;
 
-    bool success = await ApiService.submitLocationOnly(
-      latitude: position.latitude,
-      longitude: position.longitude,
-      typeId: typeId,
-    );
+      bool success = await ApiService.submitLocationOnly(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        typeId: typeId,
+      );
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(success
-          ? (isArabic ? '✅ تم إرسال البلاغ!' : '✅ Report sent!')
-          : (isArabic ? '❌ فشل الإرسال' : '❌ Failed to send')),
-        backgroundColor: success ? Colors.green : Colors.red,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(success
+            ? (isArabic ? '✅ تم إرسال البلاغ!' : '✅ Report sent!')
+            : (isArabic ? '❌ فشل الإرسال (حفظ محلياً)' : '❌ Saved to Offline Queue')),
+          backgroundColor: success ? Colors.green : Colors.orange,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (e) {
+      debugPrint("❌ Auto-Report Error: $e");
+    } finally {
+      if (mounted) setState(() => _isUploadingReport = false);
     }
-  } catch (e) {
-    debugPrint("❌ Auto-Report Error: $e");
-  } finally {
-    if (mounted) setState(() => _isUploadingReport = false);
   }
-}
+
+  void _stopAIDetectionStream() async {
+    if (_cameraController != null && _cameraController!.value.isStreamingImages) {
+      await _cameraController!.stopImageStream();
+    }
+    if (mounted) {
+      setState(() {
+        _isDetecting = false;
+        _currentPrediction = 'AI Paused';
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -186,10 +195,6 @@ Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
             CameraPreview(_cameraController!)
           else
             const Center(
-              CustomPaint(
-               painter: BoundingBoxPainter(detections: _detections),
-               child: Container(),
-                 ),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -198,6 +203,12 @@ Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
                   Text("Initializing High-Speed Dashcam...", style: TextStyle(color: Colors.white54)),
                 ],
               ),
+            ),
+
+          if (_isCameraInitialized && _cameraController != null)
+            CustomPaint(
+               painter: BoundingBoxPainter(detections: _detections),
+               child: Container(),
             ),
 
           Positioned(

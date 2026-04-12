@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'offline_queue.dart';
 
 // ==========================================
 // 1. DATA MODELS
@@ -53,7 +54,7 @@ class Hazard {
 // 2. API SERVICE MANAGER
 // ==========================================
 class ApiService {
-  static const String baseUrl = 'https://tareeq-api.onrender.com/api';
+  static const String baseUrl = 'https://rased-app-9lv5h.ondigitalocean.app/api';
   
   static String? _token;
   static String? loggedInEmail;
@@ -64,7 +65,6 @@ class ApiService {
 
   // --- SESSION PERSISTENCE ---
   
-  /// Loads the saved 7-day token from the phone's hard drive on app startup.
   static Future<void> loadSession() async {
     final prefs = await SharedPreferences.getInstance();
     _token = prefs.getString('token');
@@ -78,7 +78,7 @@ class ApiService {
 
   static Future<void> logout() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.clear(); // Wipes the hard drive memory
+    await prefs.clear();
 
     _token = null;
     loggedInEmail = null;
@@ -103,7 +103,6 @@ class ApiService {
         loggedInEmail = data['email'];
         loggedInRole = data['role']; 
 
-        // Save to hard drive so it survives app restarts!
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', _token!);
         await prefs.setString('email', loggedInEmail!);
@@ -118,7 +117,6 @@ class ApiService {
     }
   }
 
-  // --- UPDATED: Now sends Name and Phone Number to the backend! ---
   static Future<bool> registerUser(String email, String password, String nationalId, String name, String phone) async {
     try {
       final response = await http.post(
@@ -184,7 +182,6 @@ class ApiService {
     }
   }
 
-  /// Original: Gets all hazards for the main map.
   static Future<List<Hazard>> fetchHazards() async {
     if (_token == null) return [];
     try {
@@ -202,7 +199,6 @@ class ApiService {
     }
   }
 
-  // --- Gets ONLY the hazards reported by the logged-in user. ---
   static Future<List<Hazard>> fetchMyReports() async {
     if (_token == null) return [];
     try {
@@ -220,7 +216,6 @@ class ApiService {
     }
   }
 
-  // --- Gets ONLY unresolved hazards (Status 1 and 2) for the Admin panel. ---
   static Future<List<Hazard>> fetchUnsolvedHazards() async {
     if (_token == null) return [];
     try {
@@ -238,6 +233,7 @@ class ApiService {
     }
   }
 
+  // --- Report WITH Photo (Manual Form) ---
   static Future<bool> submitReport({
     required XFile photo, required double latitude, required double longitude, required int typeId,
   }) async {
@@ -260,25 +256,41 @@ class ApiService {
       return false;
     }
   }
-  // إرسال بلاغ بدون صورة (من الكاميرا الذكية)
-static Future<bool> submitLocationOnly({...}) async {
-  if (_token == null) return false;
-  try {
-    // ... نفس الكود ...
-    if (response.statusCode == 200 || response.statusCode == 201) return true;
 
-    // ❌ فشل — احفظ محلياً
-    await OfflineQueue.save({
-      'lat': latitude, 'lon': longitude, 'typeId': typeId,
-      'time': DateTime.now().toIso8601String(),
-    });
-    return false;
-  } catch (e) {
-    // ❌ لا إنترنت — احفظ محلياً
-    await OfflineQueue.save({
-      'lat': latitude, 'lon': longitude, 'typeId': typeId,
-      'time': DateTime.now().toIso8601String(),
-    });
-    return false;
+  // 🚨 FIXED: Removed literal "..." and wrote the actual implementation!
+  // --- Report WITHOUT Photo (Live AI Dashcam) ---
+  static Future<bool> submitLocationOnly({
+    required double latitude,
+    required double longitude,
+    required int typeId,
+  }) async {
+    if (_token == null) return false;
+    try {
+      var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/Hazards/report'));
+      request.headers['Authorization'] = 'Bearer $_token';
+      request.fields['Latitude'] = latitude.toString();
+      request.fields['Longitude'] = longitude.toString();
+      request.fields['TypeId'] = typeId.toString();
+      request.fields['StatusID'] = '1'; 
+      // Notice: We don't add the request.files image part here!
+
+      var response = await request.send();
+      if (response.statusCode == 200 || response.statusCode == 201) return true;
+
+      // ❌ Failed — Save Locally to Queue
+      await OfflineQueue.save({
+        'lat': latitude, 'lon': longitude, 'typeId': typeId,
+        'time': DateTime.now().toIso8601String(),
+      });
+      return false;
+
+    } catch (e) {
+      // ❌ No Internet — Save Locally to Queue
+      await OfflineQueue.save({
+        'lat': latitude, 'lon': longitude, 'typeId': typeId,
+        'time': DateTime.now().toIso8601String(),
+      });
+      return false;
+    }
   }
 }
