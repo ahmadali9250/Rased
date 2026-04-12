@@ -260,4 +260,25 @@ class ApiService {
       return false;
     }
   }
+  // إرسال بلاغ بدون صورة (من الكاميرا الذكية)
+static Future<bool> submitLocationOnly({...}) async {
+  if (_token == null) return false;
+  try {
+    // ... نفس الكود ...
+    if (response.statusCode == 200 || response.statusCode == 201) return true;
+
+    // ❌ فشل — احفظ محلياً
+    await OfflineQueue.save({
+      'lat': latitude, 'lon': longitude, 'typeId': typeId,
+      'time': DateTime.now().toIso8601String(),
+    });
+    return false;
+  } catch (e) {
+    // ❌ لا إنترنت — احفظ محلياً
+    await OfflineQueue.save({
+      'lat': latitude, 'lon': longitude, 'typeId': typeId,
+      'time': DateTime.now().toIso8601String(),
+    });
+    return false;
+  }
 }
