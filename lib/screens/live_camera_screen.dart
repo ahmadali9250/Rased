@@ -1,6 +1,4 @@
 import 'dart:ui';
-import 'dart:io';
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:geolocator/geolocator.dart';
@@ -87,7 +85,14 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       _lastFrameTime = currentTime;
 
       try {
-        String detectedDamage = await _tfliteService.predictFrame(image);
+        final result = await _tfliteService.predictFrameWithBoxes(image);
+        String detectedDamage = result['label'];
+        if (mounted) {
+          setState(() {
+          _currentPrediction = detectedDamage;
+          _detections = result['detections']; // for boxes feedback
+          });
+        }
         bool isHazardDetected = detectedDamage.toLowerCase().contains('pothole');
 
         if (mounted) {
@@ -98,7 +103,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
 
         if (isHazardDetected && !_isUploadingReport) {
 
-           if (await Vibration.hasVibrator() ?? false) {
+          if ((await Vibration.hasVibrator()) ?? false) {
             Vibration.vibrate(duration: 400);
           }
           bool canReport = _lastReportTime == null || 
@@ -126,10 +131,11 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       );
       _lastReportTime = DateTime.now();
 
-      int typeId = damageType.toLowerCase().contains('pothole') ? 0 :
-                   damageType.toLowerCase().contains('potholes') ? 1 :
-                   damageType.toLowerCase().contains('crack') ? 2 :
-                   damageType.toLowerCase().contains('manhole') ? 4 : 1;
+    // ✅ إضافة — الإرسال الفعلي للباك إند
+    final dmg = damageType.toLowerCase();
+    int typeId = dmg.contains('crack') ? 2 :
+                 dmg.contains('manhole') ? 4 :
+                 dmg.contains('pothole') ? 1 : 1;
 
       bool success = await ApiService.submitLocationOnly(
         latitude: position.latitude,
@@ -137,31 +143,32 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
         typeId: typeId,
       );
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(success
-            ? (isArabic ? '✅ تم إرسال البلاغ!' : '✅ Report sent!')
-            : (isArabic ? '❌ فشل الإرسال (حفظ محلياً)' : '❌ Saved to Offline Queue')),
-          backgroundColor: success ? Colors.green : Colors.orange,
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 2),
-        ));
-      }
-    } catch (e) {
-      debugPrint("❌ Auto-Report Error: $e");
-    } finally {
-      if (mounted) setState(() => _isUploadingReport = false);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(success
+          ? (isArabic ? '✅ تم إرسال البلاغ!' : '✅ Report sent!')
+          : (isArabic ? '❌ فشل الإرسال' : '❌ Failed to send')),
+        backgroundColor: success ? Colors.green : Colors.red,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ));
     }
+  } catch (e) {
+    debugPrint("❌ Auto-Report Error: $e");
+  } finally {
+    if (mounted) setState(() => _isUploadingReport = false);
   }
+}
 
-  void _stopAIDetectionStream() async {
-    if (_cameraController != null && _cameraController!.value.isStreamingImages) {
-      await _cameraController!.stopImageStream();
+  void _stopAIDetectionStream() {
+    try {
+      _cameraController?.stopImageStream();
+    } catch (_) {
+      // Stream was not active — safe to ignore
     }
     if (mounted) {
       setState(() {
         _isDetecting = false;
-        _currentPrediction = 'AI Paused';
       });
     }
   }
@@ -192,7 +199,15 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
         fit: StackFit.expand,
         children: [
           if (_isCameraInitialized && _cameraController != null)
-            CameraPreview(_cameraController!)
+            Stack(
+              children: [
+                CameraPreview(_cameraController!),
+                CustomPaint(
+                  painter: BoundingBoxPainter(detections: _detections),
+                  child: Container(),
+                ),
+              ],
+            )
           else
             const Center(
               child: Column(

@@ -32,15 +32,9 @@ class _AccountScreenState extends State<AccountScreen> {
 
   /// Clears the user's session and navigates back to the Login Screen.
   void _handleLogout() {
-    ApiService.logout();
-
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (context) => const LoginScreen()),
-      (route) => false,
-    );
-
     final isArabic = widget.language == 'ar';
+
+    // Show SnackBar BEFORE navigating away (context becomes invalid after pushAndRemoveUntil)
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -49,6 +43,14 @@ class _AccountScreenState extends State<AccountScreen> {
         backgroundColor: Colors.green,
         behavior: SnackBarBehavior.floating,
       ),
+    );
+
+    ApiService.logout();
+
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const LoginScreen()),
+      (route) => false,
     );
   }
 

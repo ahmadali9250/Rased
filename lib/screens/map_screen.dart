@@ -127,6 +127,7 @@ class _MapScreenState extends State<MapScreen> {
     } else {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? 'جاري تحديد موقعك...' : 'Getting current location...'), behavior: SnackBarBehavior.floating, duration: const Duration(seconds: 1)));
       Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      if (!mounted) return;
       setState(() => _myCurrentLocation = LatLng(position.latitude, position.longitude));
       _mapController.move(_myCurrentLocation!, 16.0);
     }

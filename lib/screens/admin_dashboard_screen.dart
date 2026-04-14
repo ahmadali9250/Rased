@@ -15,7 +15,9 @@ class AdminDashboardScreen extends StatefulWidget {
 class _AdminDashboardScreenState extends State<AdminDashboardScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   final bool isSuperAdmin = ApiService.loggedInRole == 'SuperAdmin';
-  final bool isArabic = ApiService.currentLanguage == 'ar';
+
+  // Computed getter — always reflects the current language
+  bool get isArabic => ApiService.currentLanguage == 'ar';
 
   // ==========================================
   // TAB 1 STATE: REPORT MANAGEMENT
@@ -469,6 +471,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
       success = await ApiService.registerUser(syntheticEmail, _passwordController.text.trim(), _nationalIdController.text.trim(), fullName, phoneNumber);
     }
 
+    if (!mounted) return;
     setState(() => _isLoadingAuth = false);
 
     if (success) {

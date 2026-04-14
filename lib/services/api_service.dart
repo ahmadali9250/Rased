@@ -256,9 +256,7 @@ class ApiService {
       return false;
     }
   }
-
-  // 🚨 FIXED: Removed literal "..." and wrote the actual implementation!
-  // --- Report WITHOUT Photo (Live AI Dashcam) ---
+  // إرسال بلاغ بدون صورة (من الكاميرا الذكية)
   static Future<bool> submitLocationOnly({
     required double latitude,
     required double longitude,
@@ -266,26 +264,30 @@ class ApiService {
   }) async {
     if (_token == null) return false;
     try {
-      var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/Hazards/report'));
-      request.headers['Authorization'] = 'Bearer $_token';
-      request.fields['Latitude'] = latitude.toString();
-      request.fields['Longitude'] = longitude.toString();
-      request.fields['TypeId'] = typeId.toString();
-      request.fields['StatusID'] = '1'; 
-      // Notice: We don't add the request.files image part here!
+      final response = await http.post(
+        Uri.parse('$baseUrl/Hazards/report-location'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+        body: jsonEncode({
+          'Latitude': latitude,
+          'Longitude': longitude,
+          'TypeId': typeId,
+          'StatusID': 1,
+        }),
+      );
 
-      var response = await request.send();
       if (response.statusCode == 200 || response.statusCode == 201) return true;
 
-      // ❌ Failed — Save Locally to Queue
+      // ❌ فشل — احفظ محلياً
       await OfflineQueue.save({
         'lat': latitude, 'lon': longitude, 'typeId': typeId,
         'time': DateTime.now().toIso8601String(),
       });
       return false;
-
     } catch (e) {
-      // ❌ No Internet — Save Locally to Queue
+      // ❌ لا إنترنت — احفظ محلياً
       await OfflineQueue.save({
         'lat': latitude, 'lon': longitude, 'typeId': typeId,
         'time': DateTime.now().toIso8601String(),
