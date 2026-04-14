@@ -54,7 +54,7 @@ class Hazard {
 // 2. API SERVICE MANAGER
 // ==========================================
 class ApiService {
-  static const String baseUrl = 'https://tareeq-api.onrender.com/api';
+  static const String baseUrl = 'https://rased-app-9lv5h.ondigitalocean.app/api';
   
   static String? _token;
   static String? loggedInEmail;
@@ -65,7 +65,6 @@ class ApiService {
 
   // --- SESSION PERSISTENCE ---
   
-  /// Loads the saved 7-day token from the phone's hard drive on app startup.
   static Future<void> loadSession() async {
     final prefs = await SharedPreferences.getInstance();
     _token = prefs.getString('token');
@@ -79,7 +78,7 @@ class ApiService {
 
   static Future<void> logout() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.clear(); // Wipes the hard drive memory
+    await prefs.clear();
 
     _token = null;
     loggedInEmail = null;
@@ -104,7 +103,6 @@ class ApiService {
         loggedInEmail = data['email'];
         loggedInRole = data['role']; 
 
-        // Save to hard drive so it survives app restarts!
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', _token!);
         await prefs.setString('email', loggedInEmail!);
@@ -119,7 +117,6 @@ class ApiService {
     }
   }
 
-  // --- UPDATED: Now sends Name and Phone Number to the backend! ---
   static Future<bool> registerUser(String email, String password, String nationalId, String name, String phone) async {
     try {
       final response = await http.post(
@@ -185,7 +182,6 @@ class ApiService {
     }
   }
 
-  /// Original: Gets all hazards for the main map.
   static Future<List<Hazard>> fetchHazards() async {
     if (_token == null) return [];
     try {
@@ -203,7 +199,6 @@ class ApiService {
     }
   }
 
-  // --- Gets ONLY the hazards reported by the logged-in user. ---
   static Future<List<Hazard>> fetchMyReports() async {
     if (_token == null) return [];
     try {
@@ -221,7 +216,6 @@ class ApiService {
     }
   }
 
-  // --- Gets ONLY unresolved hazards (Status 1 and 2) for the Admin panel. ---
   static Future<List<Hazard>> fetchUnsolvedHazards() async {
     if (_token == null) return [];
     try {
@@ -239,6 +233,7 @@ class ApiService {
     }
   }
 
+  // --- Report WITH Photo (Manual Form) ---
   static Future<bool> submitReport({
     required XFile photo, required double latitude, required double longitude, required int typeId,
   }) async {

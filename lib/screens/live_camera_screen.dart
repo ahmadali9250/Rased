@@ -50,8 +50,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       orElse: () => cameras.first,
     );
 
-    // 🚨 FIX 1: Lower resolution. The AI shrinks the image anyway!
-    // This cuts the pixel-processing time by over 70%.
     _cameraController = CameraController(
       backCamera,
       ResolutionPreset.low, 
@@ -123,15 +121,15 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     });
   }
 
-Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
-  setState(() => _isUploadingReport = true);
-  final isArabic = ApiService.currentLanguage == 'ar';
+  Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
+    setState(() => _isUploadingReport = true);
+    final isArabic = ApiService.currentLanguage == 'ar';
 
-  try {
-    Position position = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high
-    );
-    _lastReportTime = DateTime.now();
+    try {
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high
+      );
+      _lastReportTime = DateTime.now();
 
     // ✅ إضافة — الإرسال الفعلي للباك إند
     final dmg = damageType.toLowerCase();
@@ -139,11 +137,11 @@ Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
                  dmg.contains('manhole') ? 4 :
                  dmg.contains('pothole') ? 1 : 1;
 
-    bool success = await ApiService.submitLocationOnly(
-      latitude: position.latitude,
-      longitude: position.longitude,
-      typeId: typeId,
-    );
+      bool success = await ApiService.submitLocationOnly(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        typeId: typeId,
+      );
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -220,6 +218,12 @@ Future<void> _autoSubmitReport(String? imagePath, String damageType) async {
                   Text("Initializing High-Speed Dashcam...", style: TextStyle(color: Colors.white54)),
                 ],
               ),
+            ),
+
+          if (_isCameraInitialized && _cameraController != null)
+            CustomPaint(
+               painter: BoundingBoxPainter(detections: _detections),
+               child: Container(),
             ),
 
           Positioned(
