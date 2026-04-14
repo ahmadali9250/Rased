@@ -13,7 +13,7 @@ class BoundingBoxPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
 
     final bgPaint = Paint()
-      ..color = Colors.redAccent.withOpacity(0.8)
+      ..color = Colors.redAccent.withValues(alpha: 0.8)
       ..style = PaintingStyle.fill;
 
     for (var d in detections) {

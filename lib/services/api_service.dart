@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'offline_queue.dart';
 
 // ==========================================
 // 1. DATA MODELS
@@ -261,24 +262,42 @@ class ApiService {
     }
   }
   // إرسال بلاغ بدون صورة (من الكاميرا الذكية)
-static Future<bool> submitLocationOnly({...}) async {
-  if (_token == null) return false;
-  try {
-    // ... نفس الكود ...
-    if (response.statusCode == 200 || response.statusCode == 201) return true;
+  static Future<bool> submitLocationOnly({
+    required double latitude,
+    required double longitude,
+    required int typeId,
+  }) async {
+    if (_token == null) return false;
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/Hazards/report-location'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+        body: jsonEncode({
+          'Latitude': latitude,
+          'Longitude': longitude,
+          'TypeId': typeId,
+          'StatusID': 1,
+        }),
+      );
 
-    // ❌ فشل — احفظ محلياً
-    await OfflineQueue.save({
-      'lat': latitude, 'lon': longitude, 'typeId': typeId,
-      'time': DateTime.now().toIso8601String(),
-    });
-    return false;
-  } catch (e) {
-    // ❌ لا إنترنت — احفظ محلياً
-    await OfflineQueue.save({
-      'lat': latitude, 'lon': longitude, 'typeId': typeId,
-      'time': DateTime.now().toIso8601String(),
-    });
-    return false;
+      if (response.statusCode == 200 || response.statusCode == 201) return true;
+
+      // ❌ فشل — احفظ محلياً
+      await OfflineQueue.save({
+        'lat': latitude, 'lon': longitude, 'typeId': typeId,
+        'time': DateTime.now().toIso8601String(),
+      });
+      return false;
+    } catch (e) {
+      // ❌ لا إنترنت — احفظ محلياً
+      await OfflineQueue.save({
+        'lat': latitude, 'lon': longitude, 'typeId': typeId,
+        'time': DateTime.now().toIso8601String(),
+      });
+      return false;
+    }
   }
 }

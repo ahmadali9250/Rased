@@ -64,7 +64,7 @@ class TFLiteService {
         'plane2': cameraImage.planes.length > 2 ? cameraImage.planes[2].bytes : null,
         'yRowStride': cameraImage.planes[0].bytesPerRow,
         'uvRowStride': cameraImage.planes.length > 1 ? cameraImage.planes[1].bytesPerRow : 0,
-        'uvPixelStride': cameraImage.planes.length > 1 ? cameraImage.planes[1].bytesPerPixel : 0,
+        'uvPixelStride': cameraImage.planes.length > 1 ? (cameraImage.planes[1].bytesPerPixel ?? 0) : 0,
         'inputWidth': _inputWidth,
         'inputHeight': _inputHeight,
         'interpreterAddress': _interpreter!.address, 
@@ -90,11 +90,14 @@ class TFLiteService {
 
       if (format == 'yuv420') {
         Uint8List plane0 = params['plane0'];
-        Uint8List plane1 = params['plane1'];
-        Uint8List plane2 = params['plane2'];
+        Uint8List? plane1 = params['plane1'];
+        Uint8List? plane2 = params['plane2'];
         int yRowStride = params['yRowStride'];
         int uvRowStride = params['uvRowStride'];
         int uvPixelStride = params['uvPixelStride'];
+
+        // Cannot decode YUV420 without chroma planes
+        if (plane1 == null || plane2 == null) return "Clear Road";
 
         image = img.Image(width: width, height: height);
 
@@ -182,4 +185,128 @@ class TFLiteService {
       return "Clear Road";
     }
   }
+  Future<Map<String, dynamic>> predictFrameWithBoxes(CameraImage cameraImage) async {
+  if (_interpreter == null || _labels == null) {
+    return {'label': 'Clear Road', 'detections': []};
+  }
+  try {
+    final result = await compute(_processAndRunAIWithBoxes, {
+      // نفس الـ params الحالية
+      'format': cameraImage.format.group == ImageFormatGroup.yuv420 ? 'yuv420' : 'bgra8888',
+      'width': cameraImage.width,
+      'height': cameraImage.height,
+      'plane0': cameraImage.planes[0].bytes,
+      'plane1': cameraImage.planes.length > 1 ? cameraImage.planes[1].bytes : null,
+      'plane2': cameraImage.planes.length > 2 ? cameraImage.planes[2].bytes : null,
+      'yRowStride': cameraImage.planes[0].bytesPerRow,
+      'uvRowStride': cameraImage.planes.length > 1 ? cameraImage.planes[1].bytesPerRow : 0,
+      'uvPixelStride': cameraImage.planes.length > 1 ? (cameraImage.planes[1].bytesPerPixel ?? 0) : 0,
+      'inputWidth': _inputWidth,
+      'inputHeight': _inputHeight,
+      'interpreterAddress': _interpreter!.address,
+      'labels': _labels,
+    });
+    return result;
+  } catch (e) {
+    return {'label': 'Clear Road', 'detections': []};
+  }
+}
+
+static Map<String, dynamic> _processAndRunAIWithBoxes(Map<String, dynamic> params) {
+  try {
+    // نفس كود تحويل الصورة الموجود
+    img.Image? image;
+    String format = params['format'];
+    int width = params['width'];
+    int height = params['height'];
+
+    if (format == 'yuv420') {
+      Uint8List plane0 = params['plane0'];
+      Uint8List? plane1 = params['plane1'];
+      Uint8List? plane2 = params['plane2'];
+      if (plane1 == null || plane2 == null) return {'label': 'Clear Road', 'detections': []};
+      int yRowStride = params['yRowStride'];
+      int uvRowStride = params['uvRowStride'];
+      int uvPixelStride = params['uvPixelStride'];
+      image = img.Image(width: width, height: height);
+      for (int x = 0; x < width; x++) {
+        for (int y = 0; y < height; y++) {
+          final int uvIndex = uvPixelStride * (x ~/ 2) + uvRowStride * (y ~/ 2);
+          final int index = y * yRowStride + x;
+          final yp = plane0[index];
+          final up = plane1[uvIndex];
+          final vp = plane2[uvIndex];
+          int r = (yp + vp * 1436 / 1024 - 179).round().clamp(0, 255);
+          int g = (yp - up * 46549 / 131072 + 44 - vp * 93604 / 131072 + 91).round().clamp(0, 255);
+          int b = (yp + up * 1814 / 1024 - 227).round().clamp(0, 255);
+          image.setPixelRgb(x, y, r, g, b);
+        }
+      }
+    } else {
+      Uint8List plane0 = params['plane0'];
+      image = img.Image.fromBytes(width: width, height: height, bytes: plane0.buffer, order: img.ChannelOrder.bgra);
+    }
+
+    if (image == null) return {'label': 'Clear Road', 'detections': []};
+
+    int address = params['interpreterAddress'];
+    var interpreter = Interpreter.fromAddress(address);
+    List<String> labels = params['labels'];
+
+    // تشغيل النموذج واستخراج الصناديق
+    var inputShape = interpreter.getInputTensor(0).shape;
+    int inputH = inputShape[1], inputW = inputShape[2];
+    img.Image resized = img.copyResize(image, width: inputW, height: inputH);
+
+    var inputBuffer = List.generate(1, (i) =>
+      List.generate(inputH, (y) =>
+        List.generate(inputW, (x) {
+          final pixel = resized.getPixel(x, y);
+          return [pixel.r / 255.0, pixel.g / 255.0, pixel.b / 255.0];
+        })
+      )
+    );
+
+    var outputShape = interpreter.getOutputTensor(0).shape;
+    var outputBuffer = List.generate(outputShape[0], (i) =>
+      List.generate(outputShape[1], (j) => List.filled(outputShape[2], 0.0)));
+
+    interpreter.run(inputBuffer, outputBuffer);
+
+    var parsed = outputBuffer as List<List<List<double>>>;
+    int numBoxes = outputShape[2];
+    List<Map<String, dynamic>> detections = [];
+    String bestLabel = 'Clear Road';
+    double maxConf = 0.0;
+
+    for (int i = 0; i < numBoxes; i++) {
+      double conf = parsed[0][4][i];
+      if (conf > 0.25) {
+        // إحداثيات YOLO (cx, cy, w, h) → (x1, y1, x2, y2)
+        double cx = parsed[0][0][i];
+        double cy = parsed[0][1][i];
+        double w  = parsed[0][2][i];
+        double h  = parsed[0][3][i];
+
+        detections.add({
+          'x1': (cx - w / 2).clamp(0.0, 1.0),
+          'y1': (cy - h / 2).clamp(0.0, 1.0),
+          'x2': (cx + w / 2).clamp(0.0, 1.0),
+          'y2': (cy + h / 2).clamp(0.0, 1.0),
+          'conf': conf,
+          'label': labels.isNotEmpty ? labels[0] : 'Pothole',
+        });
+
+        if (conf > maxConf) {
+          maxConf = conf;
+          bestLabel = labels.isNotEmpty ? labels[0] : 'Pothole';
+        }
+      }
+    }
+
+    return {'label': bestLabel, 'detections': detections};
+  } catch (e) {
+    return {'label': 'Clear Road', 'detections': []};
+  }
+}
 }

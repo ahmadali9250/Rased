@@ -49,6 +49,7 @@ dependencies:
   google_fonts: ^8.0.2
   camera: ^0.12.0+1
   shared_preferences: ^2.5.5
+  vibration: ^2.0.0
 
 dev_dependencies:
   flutter_test:
@@ -103,5 +104,3 @@ flutter:
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
 
-#VIBRATION : 
-vibration: ^2.0.0

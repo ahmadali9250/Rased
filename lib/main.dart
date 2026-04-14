@@ -43,7 +43,7 @@ class RasedApp extends StatelessWidget {
           primary: Color(0xFFFFD700), 
           secondary: Color(0xFFFFD700), 
         ),
-        textTheme: GoogleFonts.cairoTextTheme(Theme.of(context).textTheme).apply(
+        textTheme: GoogleFonts.cairoTextTheme().apply(
           bodyColor: Colors.white,
           displayColor: Colors.white,
         ),
