@@ -31,7 +31,7 @@ class Hazard {
       id: json['id'] ?? '',
       location: LatLng(json['latitude'] ?? 0.0, json['longitude'] ?? 0.0),
       typeId: json['typeId'] ?? 0,
-      statusId: json['statusId'] ?? 0,
+      statusId: json['statusID'] ?? json['statusId'] ?? 0,
       detectionCount: json['detectionCount'] ?? 0,
       imagePath: json['imagePath'],
     );
@@ -251,8 +251,23 @@ class ApiService {
 
       var response = await request.send();
       if (response.statusCode == 201 || response.statusCode == 200) return true;
+
+      // ❌ Upload failed (e.g., server returned an error) - Save locally
+      debugPrint("❌ submitReport failed with status: ${response.statusCode}");
+      await OfflineQueue.save({
+        'lat': latitude, 'lon': longitude, 'typeId': typeId,
+        'imagePath': photo.path, // Save image path to upload later
+        'time': DateTime.now().toIso8601String(),
+      });
       return false;
     } catch (e) {
+      // ❌ No internet or other error - Save locally
+      debugPrint("❌ submitReport error: $e");
+      await OfflineQueue.save({
+        'lat': latitude, 'lon': longitude, 'typeId': typeId,
+        'imagePath': photo.path, // Save image path to upload later
+        'time': DateTime.now().toIso8601String(),
+      });
       return false;
     }
   }

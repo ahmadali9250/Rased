@@ -93,7 +93,12 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
           _detections = result['detections']; // for boxes feedback
           });
         }
-        bool isHazardDetected = detectedDamage.toLowerCase().contains('pothole');
+        
+        // ✅ Expanded Radar: Checks for all 3 major damage types
+        String dmg = detectedDamage.toLowerCase();
+        bool isHazardDetected = dmg.contains('pothole') || 
+                                dmg.contains('crack') || 
+                                dmg.contains('manhole');
 
         if (mounted) {
           setState(() {
@@ -131,7 +136,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       );
       _lastReportTime = DateTime.now();
 
-    // ✅ إضافة — الإرسال الفعلي للباك إند
+    // ✅ Map string labels to numeric TypeIDs for the backend
     final dmg = damageType.toLowerCase();
     int typeId = dmg.contains('crack') ? 2 :
                  dmg.contains('manhole') ? 4 :
@@ -181,16 +186,40 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     super.dispose();
   }
 
+  // Helper method to properly translate AI labels to Arabic for the UI
+  String _getArabicLabel(String englishLabel) {
+    String lower = englishLabel.toLowerCase();
+    if (lower.contains('pothole')) return 'حفرة';
+    if (lower.contains('crack')) return 'تشقق';
+    if (lower.contains('manhole')) return 'منهل مفتوح';
+    return englishLabel;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isArabic = ApiService.currentLanguage == 'ar';
-    bool isHazardDetected = _currentPrediction.toLowerCase().contains('pothole');
+    
+    // ✅ Updated UI logic to match the new detection parameters
+    String dmg = _currentPrediction.toLowerCase();
+    bool isHazardDetected = dmg.contains('pothole') || 
+                            dmg.contains('crack') || 
+                            dmg.contains('manhole');
+                            
     Color hudColor = isHazardDetected ? Colors.redAccent : const Color(0xFFFFD700);
     IconData hudIcon = isHazardDetected ? Icons.warning_amber_rounded : Icons.radar;
 
+    // Capitalize the first letter for English display
     String displayPrediction = _currentPrediction;
     if (_currentPrediction.isNotEmpty && _currentPrediction != 'Scanning road...') {
         displayPrediction = _currentPrediction[0].toUpperCase() + _currentPrediction.substring(1).toLowerCase();
+    }
+
+    // Determine what to show based on language and detection status
+    String finalDisplayText = displayPrediction;
+    if (isHazardDetected && isArabic) {
+        finalDisplayText = _getArabicLabel(_currentPrediction);
+    } else if (!isHazardDetected && isArabic) {
+        finalDisplayText = "جاري مسح الطريق...";
     }
 
     return Scaffold(
@@ -218,12 +247,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                   Text("Initializing High-Speed Dashcam...", style: TextStyle(color: Colors.white54)),
                 ],
               ),
-            ),
-
-          if (_isCameraInitialized && _cameraController != null)
-            CustomPaint(
-               painter: BoundingBoxPainter(detections: _detections),
-               child: Container(),
             ),
 
           Positioned(
@@ -297,7 +320,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                       Icon(hudIcon, color: hudColor, size: 40),
                       const SizedBox(height: 12),
                       Text(
-                        isHazardDetected && isArabic ? 'حفرة' : displayPrediction,
+                        finalDisplayText,
                         style: TextStyle(color: hudColor, fontSize: 24, fontWeight: FontWeight.bold),
                         textAlign: TextAlign.center,
                       ),

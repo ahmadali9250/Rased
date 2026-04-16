@@ -174,9 +174,11 @@ class _MapScreenState extends State<MapScreen> {
 
                 // Option A: Live AI Camera
                 InkWell(
-                  onTap: () {
-                    Navigator.pop(context);
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => const LiveCameraScreen()));
+                  // 🚨 FIX: Made async to wait and reload
+                  onTap: () async {
+                    Navigator.pop(context); // Close the bottom sheet first
+                    await Navigator.push(context, MaterialPageRoute(builder: (context) => const LiveCameraScreen()));
+                    _fetchLiveHazards(); // 🚨 FIX: Reloads map data instantly upon returning
                   },
                   borderRadius: BorderRadius.circular(16),
                   child: Container(
@@ -214,10 +216,11 @@ class _MapScreenState extends State<MapScreen> {
 
                 // Option B: Manual Photo
                 InkWell(
-                  onTap: () {
-                    Navigator.pop(context);
-                    // Opens your existing Manual Report screen!
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => const ReportDamageScreen()));
+                  // 🚨 FIX: Made async to wait and reload
+                  onTap: () async {
+                    Navigator.pop(context); // Close the bottom sheet first
+                    await Navigator.push(context, MaterialPageRoute(builder: (context) => const ReportDamageScreen()));
+                    _fetchLiveHazards(); // 🚨 FIX: Reloads map data instantly upon returning
                   },
                   borderRadius: BorderRadius.circular(16),
                   child: Container(
