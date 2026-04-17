@@ -27,9 +27,15 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   @override
   void initState() {
     super.initState();
-    // TODO: When backend supports fetching user profiles, populate this dynamically!
-    _initialPhone = "791234567";
-    _initialEmail = ApiService.loggedInEmail ?? "";
+    
+    // ✅ Fetching real data from ApiService
+    String rawPhone = ApiService.userPhone;
+    // Strip country code if the backend provides it, to avoid IntlPhoneField bug
+    if (rawPhone.startsWith('+962')) rawPhone = rawPhone.substring(4);
+    if (rawPhone.startsWith('00962')) rawPhone = rawPhone.substring(5);
+    
+    _initialPhone = rawPhone;
+    _initialEmail = ApiService.userEmail;
 
     _phoneController = TextEditingController(text: _initialPhone);
     _emailController = TextEditingController(text: _initialEmail);
@@ -149,32 +155,26 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
                 onPressed: () {
-                  // Rule A: Empty Fields
                   if (oldPass.text.isEmpty || newPass.text.isEmpty || confirmPass.text.isEmpty) {
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? '❌ يرجى تعبئة جميع الحقول!' : '❌ Please fill all fields!'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
                     return;
                   }
 
-                  // Rule B: Current Password Check (Simulated)
-                  // TODO: Connect this to actual backend authentication validation!
                   if (oldPass.text != "1234") {
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? '❌ كلمة المرور الحالية غير صحيحة! (جرب 1234)' : '❌ Incorrect current password! (Try 1234)'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
                     return;
                   }
 
-                  // Rule C: New Password Match
                   if (newPass.text != confirmPass.text) {
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? '❌ كلمة المرور الجديدة غير متطابقة!' : '❌ New passwords do not match!'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
                     return;
                   }
 
-                  // Rule D: Old vs New Check
                   if (newPass.text == oldPass.text) {
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? '❌ كلمة المرور الجديدة يجب أن تكون مختلفة عن القديمة!' : '❌ New password cannot be the same as the old one!'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
                     return;
                   }
 
-                  // Success!
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? '✅ تم تحديث كلمة المرور بنجاح!' : '✅ Password updated successfully!'), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating));
                 },
@@ -315,7 +315,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   Widget build(BuildContext context) {
     final isArabic = ApiService.currentLanguage == 'ar';
     
-    // Extracts the real ID from the backend token
+    // Fallback ID if the backend doesn't provide it yet
     final String nationalId = ApiService.loggedInEmail?.split('@')[0] ?? "Unknown";
 
     return Directionality(
@@ -348,13 +348,15 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             const SizedBox(height: 32),
 
             // --- 2. LOCKED FIELDS (Trust Anchor) ---
-            _buildLockedField(label: isArabic ? "الاسم الكامل" : "Full Name", value: "Ahmad Ali Alsayyed Ahmad"),
+            // ✅ Connected to dynamic API Service variable!
+            _buildLockedField(label: isArabic ? "الاسم الكامل" : "Full Name", value: ApiService.userName),
             const SizedBox(height: 16),
             _buildLockedField(label: isArabic ? "الرقم الوطني" : "ID Number", value: nationalId),
             const SizedBox(height: 16),
-            _buildLockedField(label: isArabic ? "تاريخ الميلاد" : "Date of Birth", value: "10/01/2006"), // TODO: Fetch from backend
+            _buildLockedField(label: isArabic ? "تاريخ الميلاد" : "Date of Birth", value: "10/01/2006"), // TODO: Ask backend to add this later!
             const SizedBox(height: 16),
-            _buildLockedField(label: isArabic ? "نوع الحساب" : "Account Role", value: ApiService.loggedInRole ?? (isArabic ? "مستخدم" : "User")),
+            // ✅ Connected to dynamic API Service variable!
+            _buildLockedField(label: isArabic ? "نوع الحساب" : "Account Role", value: ApiService.userRole),
             const SizedBox(height: 16),
 
             // --- 3. EDITABLE FIELDS ---

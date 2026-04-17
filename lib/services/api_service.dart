@@ -61,6 +61,12 @@ class ApiService {
   static String? loggedInRole;
   static String currentLanguage = 'en';
 
+  // ✅ NEW VARIABLES for Profile Screen
+  static String userName = "Unknown";
+  static String userPhone = "Unknown";
+  static String userEmail = "Unknown";
+  static String userRole = "User";
+
   static bool get isLoggedIn => _token != null;
 
   // --- SESSION PERSISTENCE ---
@@ -70,6 +76,12 @@ class ApiService {
     _token = prefs.getString('token');
     loggedInEmail = prefs.getString('email');
     loggedInRole = prefs.getString('role');
+    
+    // Load new profile variables from cache if available
+    userName = prefs.getString('userName') ?? "Unknown";
+    userPhone = prefs.getString('userPhone') ?? "Unknown";
+    userEmail = prefs.getString('userEmail') ?? loggedInEmail ?? "Unknown";
+    userRole = prefs.getString('userRole') ?? loggedInRole ?? "User";
     
     if (_token != null) {
       debugPrint("✅ Found saved session! Welcome back $loggedInEmail");
@@ -83,6 +95,11 @@ class ApiService {
     _token = null;
     loggedInEmail = null;
     loggedInRole = null;
+    userName = "Unknown";
+    userPhone = "Unknown";
+    userEmail = "Unknown";
+    userRole = "User";
+
     debugPrint("✅ User logged out. Token cleared.");
   }
 
@@ -102,11 +119,23 @@ class ApiService {
         _token = data['token'];
         loggedInEmail = data['email'];
         loggedInRole = data['role']; 
+        
+        // ✅ NEW LINES: Read and save the profile data from the backend
+        userName = data['name'] ?? "Unknown";
+        userPhone = data['phoneNumber'] ?? "Unknown";
+        userEmail = data['email'] ?? "Unknown";
+        userRole = data['role'] ?? "User";
 
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', _token!);
         await prefs.setString('email', loggedInEmail!);
         await prefs.setString('role', loggedInRole!);
+        
+        // Cache the new variables so they survive app restarts
+        await prefs.setString('userName', userName);
+        await prefs.setString('userPhone', userPhone);
+        await prefs.setString('userEmail', userEmail);
+        await prefs.setString('userRole', userRole);
 
         debugPrint("✅ Successfully logged in! Token saved permanently.");
         return true;
@@ -271,7 +300,8 @@ class ApiService {
       return false;
     }
   }
-  // إرسال بلاغ بدون صورة (من الكاميرا الذكية)
+
+  // Send report without photo (from smart camera)
   static Future<bool> submitLocationOnly({
     required double latitude,
     required double longitude,
@@ -295,14 +325,14 @@ class ApiService {
 
       if (response.statusCode == 200 || response.statusCode == 201) return true;
 
-      // ❌ فشل — احفظ محلياً
+      // ❌ Failed — save locally
       await OfflineQueue.save({
         'lat': latitude, 'lon': longitude, 'typeId': typeId,
         'time': DateTime.now().toIso8601String(),
       });
       return false;
     } catch (e) {
-      // ❌ لا إنترنت — احفظ محلياً
+      // ❌ No internet — save locally
       await OfflineQueue.save({
         'lat': latitude, 'lon': longitude, 'typeId': typeId,
         'time': DateTime.now().toIso8601String(),
