@@ -22,7 +22,6 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   late String _initialPhone;
   late String _initialEmail;
   bool _hasChanges = false;
-  String _fullPhoneNumber = ''; // Holds the intl formatted number
 
   @override
   void initState() {
@@ -377,7 +376,6 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
                 focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFFFD700))),
               ),
               onChanged: (phone) {
-                _fullPhoneNumber = phone.completeNumber;
                 _checkForChanges();
               },
             ),

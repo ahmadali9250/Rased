@@ -9,11 +9,16 @@ class BoundingBoxPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final boxPaint = Paint()
       ..color = Colors.redAccent
-      ..strokeWidth = 2.5
+      ..strokeWidth = 2.2
       ..style = PaintingStyle.stroke;
 
+    final glowPaint = Paint()
+      ..color = Colors.redAccent.withValues(alpha: 0.12)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 8;
+
     final bgPaint = Paint()
-      ..color = Colors.redAccent.withValues(alpha: 0.8)
+      ..color = Colors.black.withValues(alpha: 0.65)
       ..style = PaintingStyle.fill;
 
     for (var d in detections) {
@@ -23,7 +28,9 @@ class BoundingBoxPainter extends CustomPainter {
         (d['x2'] as double) * size.width,
         (d['y2'] as double) * size.height,
       );
-      canvas.drawRect(rect, boxPaint);
+      final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(10));
+      canvas.drawRRect(rrect, glowPaint);
+      canvas.drawRRect(rrect, boxPaint);
 
       final label = '${d['label']} ${((d['conf'] as double) * 100).toStringAsFixed(0)}%';
       final tp = TextPainter(
@@ -34,11 +41,24 @@ class BoundingBoxPainter extends CustomPainter {
         textDirection: TextDirection.ltr,
       )..layout();
 
-      canvas.drawRect(
-        Rect.fromLTWH(rect.left, rect.top - 20, tp.width + 8, 20),
-        bgPaint,
+      final labelWidth = tp.width + 14;
+      final labelHeight = 22.0;
+      final labelLeft = rect.left.clamp(0.0, size.width - labelWidth);
+      final labelTop = (rect.top - labelHeight - 6).clamp(0.0, size.height - labelHeight);
+      final labelRect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(labelLeft, labelTop, labelWidth, labelHeight),
+        const Radius.circular(8),
       );
-      tp.paint(canvas, Offset(rect.left + 4, rect.top - 18));
+
+      canvas.drawRRect(labelRect, bgPaint);
+      canvas.drawRRect(
+        labelRect,
+        Paint()
+          ..color = Colors.redAccent.withValues(alpha: 0.75)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+      tp.paint(canvas, Offset(labelLeft + 7, labelTop + 3));
     }
   }
 

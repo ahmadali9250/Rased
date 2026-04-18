@@ -36,6 +36,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
+    if (_fullPhoneNumber.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? 'يرجى إدخال رقم الهاتف' : 'Please enter a phone number'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
+      return;
+    }
+
     if (_passwordController.text.isEmpty) {
        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? 'يرجى إدخال كلمة المرور' : 'Please enter a password'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
       return;
@@ -43,17 +48,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     setState(() => _isLoading = true);
 
-    String syntheticEmail = "${_nationalIdController.text.trim()}@rased.com";
     String fullName = _nameController.text.trim();
     String phoneNumber = _fullPhoneNumber; 
 
-    // --- PASSING NAME AND PHONE ---
+    // --- PASSING FIELDS REQUIRED BY /api/Auth/RegisterUser ---
     bool success = await ApiService.registerUser(
-      syntheticEmail,
       _passwordController.text.trim(),
       _nationalIdController.text.trim(),
       fullName,
-      phoneNumber
+      phoneNumber,
+      language: widget.language,
     );
 
     if (!mounted) return;

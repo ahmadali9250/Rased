@@ -48,7 +48,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
   /// Uses the backend's high-efficiency 'unsolved' endpoint!
   Future<void> _loadReports() async {
     setState(() => _isLoadingReports = true);
-    final data = await ApiService.fetchUnsolvedHazards(); 
+    final data = await ApiService.fetchUnsolvedHazards(language: ApiService.currentLanguage); 
     
     if (mounted) {
       setState(() {
@@ -112,8 +112,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
   }
 
   Widget _buildAdminReportCard(Hazard hazard) {
-    final String typeName = _getHazardName(hazard.typeId, isArabic);
-    final String statusText = _getStatusText(hazard.statusId, isArabic);
+    final String typeName = _getHazardName(hazard, isArabic);
+    final String statusText = _getStatusText(hazard, isArabic);
     final Color statusColor = _getStatusColor(hazard.statusId);
 
     return Card(
@@ -172,7 +172,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                               future: _getAddress(hazard.location.latitude, hazard.location.longitude),
                               builder: (context, snapshot) {
                                 if (snapshot.connectionState == ConnectionState.waiting) return Text(isArabic ? 'جاري ترجمة الموقع...' : 'Translating GPS...', style: const TextStyle(color: Colors.white54, fontSize: 12, fontStyle: FontStyle.italic));
-                                return Text(snapshot.data ?? 'Unknown', style: const TextStyle(color: Colors.white70, fontSize: 13));
+                                return Text(snapshot.data ?? (isArabic ? 'غير معروف' : 'Unknown'), style: const TextStyle(color: Colors.white70, fontSize: 13));
                               },
                             ),
                           ),
@@ -333,17 +333,24 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
   }
 
   Widget _statusButton(String id, int newStatus, String label, Color color) {
+    final successMessage = isArabic ? '✅ تم تحديث الحالة!' : '✅ Status Updated!';
+    final failureMessage = isArabic ? '❌ فشل تحديث الحالة' : '❌ Failed to update status';
+
     return ActionChip(
       backgroundColor: color.withValues(alpha: 0.1),
       side: BorderSide(color: color),
       label: Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold)),
       onPressed: () async {
-        bool success = await ApiService.updateHazardStatus(id, newStatus);
+        bool success = await ApiService.updateHazardStatus(
+          id,
+          newStatus,
+          language: ApiService.currentLanguage,
+        );
         if (success) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ Status Updated!'), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating));
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(successMessage), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating));
           _loadReports(); 
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('❌ Failed to update status'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(failureMessage), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
         }
       },
     );
@@ -362,7 +369,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
     return "${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}";
   }
 
-  String _getStatusText(int statusId, bool isArabic) {
+  String _getStatusText(Hazard hazard, bool isArabic) {
+    final apiName = hazard.statusName?.trim();
+    if (apiName != null && apiName.isNotEmpty) {
+      return isArabic ? _translateStatusName(apiName) : apiName;
+    }
+
+    final statusId = hazard.statusId;
     switch (statusId) {
       case 1: return isArabic ? 'قيد المراجعة' : 'Pending';
       case 2: return isArabic ? 'قيد العمل' : 'In Progress';
@@ -382,7 +395,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
     }
   }
 
-  String _getHazardName(int typeId, bool isArabic) {
+  String _getHazardName(Hazard hazard, bool isArabic) {
+    final apiName = hazard.typeName?.trim();
+    if (apiName != null && apiName.isNotEmpty) {
+      return isArabic ? _translateHazardTypeName(apiName) : apiName;
+    }
+
+    final typeId = hazard.typeId;
     switch (typeId) {
       case 1: return isArabic ? 'حفرة' : 'Pothole';
       case 2: return isArabic ? 'تشقق' : 'Crack';
@@ -449,6 +468,46 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
     );
   }
 
+  String _translateHazardTypeName(String englishName) {
+    final normalized = englishName.toLowerCase().trim();
+    switch (normalized) {
+      case 'pothole':
+        return 'حفرة';
+      case 'crack':
+        return 'تشقق';
+      case 'faded lines':
+        return 'خطوط باهتة';
+      case 'broken manhole':
+        return 'مناهل مكسورة';
+      case 'street light failure':
+        return 'تعطل إنارة الشارع';
+      case 'water leakage':
+        return 'تسرب مياه';
+      case 'other':
+        return 'أخرى';
+      default:
+        return englishName;
+    }
+  }
+
+  String _translateStatusName(String englishName) {
+    final normalized = englishName.toLowerCase().trim();
+    switch (normalized) {
+      case 'pending':
+        return 'قيد المراجعة';
+      case 'in progress':
+        return 'قيد العمل';
+      case 'resolved':
+        return 'محلول';
+      case 'incorrect report':
+        return 'بلاغ غير صحيح';
+      case 'rejected (ai)':
+        return 'مرفوض';
+      default:
+        return englishName;
+    }
+  }
+
   /// 🚨 FIXED: Now sends all 5 arguments to the API Service!
   void _handleCreateAccount(bool isAdmin) async {
     final isArabic = ApiService.currentLanguage == 'ar';
@@ -468,7 +527,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
     if (isAdmin) {
       success = await ApiService.registerAdmin(syntheticEmail, _passwordController.text.trim(), _nationalIdController.text.trim(), fullName, phoneNumber);
     } else {
-      success = await ApiService.registerUser(syntheticEmail, _passwordController.text.trim(), _nationalIdController.text.trim(), fullName, phoneNumber);
+      success = await ApiService.registerUser(
+        _passwordController.text.trim(),
+        _nationalIdController.text.trim(),
+        fullName,
+        phoneNumber,
+        language: ApiService.currentLanguage,
+      );
     }
 
     if (!mounted) return;

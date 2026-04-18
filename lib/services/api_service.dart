@@ -13,7 +13,9 @@ class Hazard {
   final String id;
   final LatLng location;
   final int typeId;
+  final String? typeName;
   final int statusId;
+  final String? statusName;
   final int detectionCount;
   final String? imagePath;
 
@@ -21,7 +23,9 @@ class Hazard {
     required this.id,
     required this.location,
     required this.typeId,
+    this.typeName,
     required this.statusId,
+    this.statusName,
     required this.detectionCount,
     this.imagePath,
   });
@@ -31,7 +35,9 @@ class Hazard {
       id: json['id'] ?? '',
       location: LatLng(json['latitude'] ?? 0.0, json['longitude'] ?? 0.0),
       typeId: json['typeId'] ?? 0,
+      typeName: json['typeName']?.toString(),
       statusId: json['statusID'] ?? json['statusId'] ?? 0,
+      statusName: json['statusName']?.toString(),
       detectionCount: json['detectionCount'] ?? 0,
       imagePath: json['imagePath'],
     );
@@ -57,6 +63,7 @@ class ApiService {
   static const String baseUrl = 'https://rased-app-9lv5h.ondigitalocean.app/api';
   
   static String? _token;
+  static String? lastAuthError;
   static String? loggedInEmail;
   static String? loggedInRole;
   static String currentLanguage = 'en';
@@ -106,30 +113,52 @@ class ApiService {
   // ------------------------------------------
   // AUTHENTICATION ENDPOINTS
   // ------------------------------------------
-  static Future<bool> login(String email, String password) async {
+  static Future<bool> login(String nationalId, String password, {String? language}) async {
+    lastAuthError = null;
     try {
+      final requestLanguage = (language ?? currentLanguage).trim().isEmpty
+          ? 'en'
+          : (language ?? currentLanguage).trim();
+
       final response = await http.post(
         Uri.parse('$baseUrl/Auth/login'),
-        headers: {'Content-Type': 'application/json', 'Accept-Language': 'en'},
-        body: jsonEncode({"email": email, "password": password}),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept-Language': requestLanguage,
+        },
+        body: jsonEncode({
+          "nationalId": nationalId,
+          "password": password,
+        }),
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        _token = data['token'];
-        loggedInEmail = data['email'];
-        loggedInRole = data['role']; 
+
+        // Support both flat and nested response shapes.
+        final userData = data['user'] is Map<String, dynamic>
+            ? data['user'] as Map<String, dynamic>
+            : data;
+
+        _token = (data['token'] ?? data['accessToken'] ?? '').toString();
+        if (_token == null || _token!.isEmpty) {
+          lastAuthError = 'Invalid login response: missing token.';
+          return false;
+        }
+
+        loggedInEmail = userData['email']?.toString();
+        loggedInRole = userData['role']?.toString(); 
         
         // ✅ NEW LINES: Read and save the profile data from the backend
-        userName = data['name'] ?? "Unknown";
-        userPhone = data['phoneNumber'] ?? "Unknown";
-        userEmail = data['email'] ?? "Unknown";
-        userRole = data['role'] ?? "User";
+        userName = userData['name']?.toString() ?? "Unknown";
+        userPhone = userData['phoneNumber']?.toString() ?? "Unknown";
+        userEmail = userData['email']?.toString() ?? "Unknown";
+        userRole = userData['role']?.toString() ?? "User";
 
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', _token!);
-        await prefs.setString('email', loggedInEmail!);
-        await prefs.setString('role', loggedInRole!);
+        await prefs.setString('email', loggedInEmail ?? '');
+        await prefs.setString('role', loggedInRole ?? '');
         
         // Cache the new variables so they survive app restarts
         await prefs.setString('userName', userName);
@@ -140,19 +169,44 @@ class ApiService {
         debugPrint("✅ Successfully logged in! Token saved permanently.");
         return true;
       }
+
+      try {
+        final errorData = jsonDecode(response.body);
+        if (errorData is Map && errorData['error'] != null) {
+          lastAuthError = errorData['error'].toString();
+        } else {
+          lastAuthError = 'Login failed (${response.statusCode}).';
+        }
+      } catch (_) {
+        lastAuthError = 'Login failed (${response.statusCode}).';
+      }
+
       return false;
     } catch (e) {
+      lastAuthError = 'Unable to connect to server.';
       return false;
     }
   }
 
-  static Future<bool> registerUser(String email, String password, String nationalId, String name, String phone) async {
+  static Future<bool> registerUser(
+    String password,
+    String nationalId,
+    String name,
+    String phone, {
+    String? language,
+  }) async {
     try {
+      final requestLanguage = (language ?? currentLanguage).trim().isEmpty
+          ? 'en'
+          : (language ?? currentLanguage).trim();
+
       final response = await http.post(
         Uri.parse('$baseUrl/Auth/RegisterUser'),
-        headers: {'Content-Type': 'application/json', 'Accept-Language': 'en'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept-Language': requestLanguage,
+        },
         body: jsonEncode({
-          "email": email,
           "password": password,
           "nationalId": nationalId,
           "name": name,
@@ -197,26 +251,46 @@ class ApiService {
   // HAZARD MANAGEMENT ENDPOINTS
   // ------------------------------------------
   
-  static Future<bool> updateHazardStatus(String hazardId, int newStatusId) async {
+  static Future<bool> updateHazardStatus(
+    String hazardId,
+    int newStatusId, {
+    String? language,
+  }) async {
     if (_token == null) return false;
     try {
+      final requestLanguage = (language ?? currentLanguage).trim().isEmpty
+          ? 'en'
+          : (language ?? currentLanguage).trim();
+
       final response = await http.patch(
         Uri.parse('$baseUrl/Hazards/$hazardId/status/$newStatusId'),
-        headers: {'Authorization': 'Bearer $_token', 'Content-Type': 'application/json'},
+        headers: {
+          'Authorization': 'Bearer $_token',
+          'Accept-Language': requestLanguage,
+        },
       );
-      if (response.statusCode == 200 || response.statusCode == 204) return true;
+      if (response.statusCode == 202 || response.statusCode == 200 || response.statusCode == 204) {
+        return true;
+      }
       return false;
     } catch (e) {
       return false;
     }
   }
 
-  static Future<List<Hazard>> fetchHazards() async {
+  static Future<List<Hazard>> fetchHazards({String? language}) async {
     if (_token == null) return [];
     try {
+      final requestLanguage = (language ?? currentLanguage).trim().isEmpty
+          ? 'en'
+          : (language ?? currentLanguage).trim();
+
       final response = await http.get(
         Uri.parse('$baseUrl/Hazards/all'),
-        headers: {'Authorization': 'Bearer $_token'},
+        headers: {
+          'Authorization': 'Bearer $_token',
+          'Accept-Language': requestLanguage,
+        },
       );
       if (response.statusCode == 200) {
         List<dynamic> jsonList = jsonDecode(response.body);
@@ -228,12 +302,19 @@ class ApiService {
     }
   }
 
-  static Future<List<Hazard>> fetchMyReports() async {
+  static Future<List<Hazard>> fetchMyReports({String? language}) async {
     if (_token == null) return [];
     try {
+      final requestLanguage = (language ?? currentLanguage).trim().isEmpty
+          ? 'en'
+          : (language ?? currentLanguage).trim();
+
       final response = await http.get(
         Uri.parse('$baseUrl/Hazards/my-reports'), 
-        headers: {'Authorization': 'Bearer $_token'},
+        headers: {
+          'Authorization': 'Bearer $_token',
+          'Accept-Language': requestLanguage,
+        },
       );
       if (response.statusCode == 200) {
         List<dynamic> jsonList = jsonDecode(response.body);
@@ -245,12 +326,19 @@ class ApiService {
     }
   }
 
-  static Future<List<Hazard>> fetchUnsolvedHazards() async {
+  static Future<List<Hazard>> fetchUnsolvedHazards({String? language}) async {
     if (_token == null) return [];
     try {
+      final requestLanguage = (language ?? currentLanguage).trim().isEmpty
+          ? 'en'
+          : (language ?? currentLanguage).trim();
+
       final response = await http.get(
         Uri.parse('$baseUrl/Hazards/unsolved'), 
-        headers: {'Authorization': 'Bearer $_token'},
+        headers: {
+          'Authorization': 'Bearer $_token',
+          'Accept-Language': requestLanguage,
+        },
       );
       if (response.statusCode == 200) {
         List<dynamic> jsonList = jsonDecode(response.body);
@@ -264,12 +352,21 @@ class ApiService {
 
   // --- Report WITH Photo (Manual Form) ---
   static Future<bool> submitReport({
-    required XFile photo, required double latitude, required double longitude, required int typeId,
+    required XFile photo,
+    required double latitude,
+    required double longitude,
+    required int typeId,
+    String? language,
   }) async {
     if (_token == null) return false;
     try {
+      final requestLanguage = (language ?? currentLanguage).trim().isEmpty
+          ? 'en'
+          : (language ?? currentLanguage).trim();
+
       var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/Hazards/report'));
       request.headers['Authorization'] = 'Bearer $_token';
+      request.headers['Accept-Language'] = requestLanguage;
       request.fields['Latitude'] = latitude.toString();
       request.fields['Longitude'] = longitude.toString();
       request.fields['TypeId'] = typeId.toString();
@@ -279,7 +376,7 @@ class ApiService {
       request.files.add(http.MultipartFile.fromBytes('Image', bytes, filename: photo.name));
 
       var response = await request.send();
-      if (response.statusCode == 201 || response.statusCode == 200) return true;
+      if (response.statusCode == 201 || response.statusCode == 200 || response.statusCode == 409) return true;
 
       // ❌ Upload failed (e.g., server returned an error) - Save locally
       debugPrint("❌ submitReport failed with status: ${response.statusCode}");
@@ -323,7 +420,7 @@ class ApiService {
         }),
       );
 
-      if (response.statusCode == 200 || response.statusCode == 201) return true;
+      if (response.statusCode == 200 || response.statusCode == 201 || response.statusCode == 409) return true;
 
       // ❌ Failed — save locally
       await OfflineQueue.save({

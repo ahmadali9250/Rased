@@ -17,7 +17,7 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final TextEditingController _emailController = TextEditingController(); // Stores National ID
+  final TextEditingController _nationalIdController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   bool _isLoading = false;
 
@@ -33,13 +33,11 @@ class _LoginScreenState extends State<LoginScreen> {
 
   /// Processes the login request.
   /// 
-  /// Converts the National ID into a synthetic email (`[ID]@rased.com`) 
-  /// to authenticate seamlessly with the backend identity framework.
   void _handleLogin() async {
     final isArabic = _language == 'ar';
 
     // 1. Validate inputs to prevent unnecessary API calls
-    if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
+    if (_nationalIdController.text.isEmpty || _passwordController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -56,20 +54,20 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => _isLoading = true);
 
-    // 2. THE MAGIC TRICK: Append @rased.com to the National ID
-    String syntheticEmail = "${_emailController.text.trim()}@rased.com";
-    debugPrint("🚀 Attempting to log in as: $syntheticEmail");
+    final nationalId = _nationalIdController.text.trim();
+    debugPrint("🚀 Attempting to log in with national ID: $nationalId");
 
-    // 3. Authenticate against the C# backend
+    // 2. Authenticate against backend using API contract
     bool success = await ApiService.login(
-      syntheticEmail,
+      nationalId,
       _passwordController.text.trim(),
+      language: _language,
     );
 
     if (!mounted) return;
     setState(() => _isLoading = false);
 
-    // 4. Handle authentication response
+    // 3. Handle authentication response
     if (success) {
       ApiService.currentLanguage = _language; // Lock in the language preference
 
@@ -78,12 +76,15 @@ class _LoginScreenState extends State<LoginScreen> {
         MaterialPageRoute(builder: (context) => const MapScreen()),
       );
     } else {
+      final apiError = ApiService.lastAuthError;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            isArabic
-                ? '❌ الرقم الوطني أو كلمة المرور غير صحيحة!'
-                : '❌ Invalid National ID or password!',
+            apiError?.isNotEmpty == true
+                ? '❌ $apiError'
+                : (isArabic
+                    ? '❌ الرقم الوطني أو كلمة المرور غير صحيحة!'
+                    : '❌ Invalid National ID or password!'),
           ),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
@@ -337,7 +338,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           
                           // National ID Field
                           TextField(
-                            controller: _emailController,
+                            controller: _nationalIdController,
                             style: const TextStyle(color: Colors.white),
                             keyboardType: TextInputType.number, 
                             inputFormatters: [
@@ -417,7 +418,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   // If the user registered successfully, auto-fill the login box!
                                   if (registeredId != null && registeredId is String) {
                                     setState(() {
-                                      _emailController.text = registeredId;
+                                      _nationalIdController.text = registeredId;
                                       // Optional: You could also focus the password field here automatically
                                     });
                                   }

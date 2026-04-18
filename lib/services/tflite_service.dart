@@ -165,22 +165,52 @@ class TFLiteService {
 
     interpreter.run(inputBuffer, outputBuffer);
 
-    double maxConfidence = 0.0;
+    double maxScore = 0.0;
+    String bestLabel = "Clear Road";
 
     if (outputShape.length == 3) {
       var parsedOutput = outputBuffer as List<List<List<double>>>;
       int numBoxes = outputShape[2];
+      int numChannels = outputShape[1];
+
       for (int i = 0; i < numBoxes; i++) {
-        double confidence = parsedOutput[0][4][i]; 
-        if (confidence > maxConfidence) maxConfidence = confidence;
+        double objectness = parsedOutput[0][4][i];
+        if (objectness <= 0) continue;
+
+        double score = objectness;
+        String label = labels.isNotEmpty ? labels.first : "Unknown";
+
+        if (numChannels > 5) {
+          int bestClassIndex = 0;
+          double bestClassProb = 0.0;
+          for (int c = 5; c < numChannels; c++) {
+            double classProb = parsedOutput[0][c][i];
+            if (classProb > bestClassProb) {
+              bestClassProb = classProb;
+              bestClassIndex = c - 5;
+            }
+          }
+          score = objectness * bestClassProb;
+          if (labels.isNotEmpty && bestClassIndex < labels.length) {
+            label = labels[bestClassIndex];
+          } else {
+            label = "Class $bestClassIndex";
+          }
+        }
+
+        if (score > maxScore) {
+          maxScore = score;
+          bestLabel = label;
+        }
       }
     } else if (outputShape.length == 2) {
       var parsedOutput = outputBuffer as List<List<double>>;
-      maxConfidence = parsedOutput[0][0];
+      maxScore = parsedOutput[0][0];
+      bestLabel = labels.isNotEmpty ? labels.first : "Pothole";
     }
 
-    if (maxConfidence > 0.25) {
-      return labels.isNotEmpty ? labels[0] : "Pothole";
+    if (maxScore > 0.20) {
+      return bestLabel;
     } else {
       return "Clear Road";
     }
@@ -247,11 +277,11 @@ static Map<String, dynamic> _processAndRunAIWithBoxes(Map<String, dynamic> param
       image = img.Image.fromBytes(width: width, height: height, bytes: plane0.buffer, order: img.ChannelOrder.bgra);
     }
 
-    if (image == null) return {'label': 'Clear Road', 'detections': []};
-
     int address = params['interpreterAddress'];
     var interpreter = Interpreter.fromAddress(address);
-    List<String> labels = params['labels'];
+    List<String> labels = (params['labels'] as List<dynamic>? ?? [])
+      .map((e) => e.toString())
+      .toList();
 
     // تشغيل النموذج واستخراج الصناديق
     var inputShape = interpreter.getInputTensor(0).shape;
@@ -273,15 +303,39 @@ static Map<String, dynamic> _processAndRunAIWithBoxes(Map<String, dynamic> param
 
     interpreter.run(inputBuffer, outputBuffer);
 
-    var parsed = outputBuffer as List<List<List<double>>>;
+    var parsed = outputBuffer;
     int numBoxes = outputShape[2];
+    int numChannels = outputShape[1];
     List<Map<String, dynamic>> detections = [];
     String bestLabel = 'Clear Road';
-    double maxConf = 0.0;
+    double maxScore = 0.0;
 
     for (int i = 0; i < numBoxes; i++) {
-      double conf = parsed[0][4][i];
-      if (conf > 0.25) {
+      double objectness = parsed[0][4][i];
+      if (objectness > 0.0) {
+        double score = objectness;
+        String label = labels.isNotEmpty ? labels.first : 'Unknown';
+
+        if (numChannels > 5) {
+          int bestClassIndex = 0;
+          double bestClassProb = 0.0;
+          for (int c = 5; c < numChannels; c++) {
+            double classProb = parsed[0][c][i];
+            if (classProb > bestClassProb) {
+              bestClassProb = classProb;
+              bestClassIndex = c - 5;
+            }
+          }
+          score = objectness * bestClassProb;
+          if (labels.isNotEmpty && bestClassIndex < labels.length) {
+            label = labels[bestClassIndex];
+          } else {
+            label = 'Class $bestClassIndex';
+          }
+        }
+
+        if (score <= 0.20) continue;
+
         // إحداثيات YOLO (cx, cy, w, h) → (x1, y1, x2, y2)
         double cx = parsed[0][0][i];
         double cy = parsed[0][1][i];
@@ -293,15 +347,23 @@ static Map<String, dynamic> _processAndRunAIWithBoxes(Map<String, dynamic> param
           'y1': (cy - h / 2).clamp(0.0, 1.0),
           'x2': (cx + w / 2).clamp(0.0, 1.0),
           'y2': (cy + h / 2).clamp(0.0, 1.0),
-          'conf': conf,
-          'label': labels.isNotEmpty ? labels[0] : 'Pothole',
+          'conf': score,
+          'label': label,
         });
 
-        if (conf > maxConf) {
-          maxConf = conf;
-          bestLabel = labels.isNotEmpty ? labels[0] : 'Pothole';
+        if (score > maxScore) {
+          maxScore = score;
+          bestLabel = label;
         }
       }
+    }
+
+    detections = _nonMaxSuppression(detections, iouThreshold: 0.45);
+
+    if (detections.isNotEmpty) {
+      final topDetection = detections.first;
+      bestLabel = topDetection['label'] as String? ?? bestLabel;
+      maxScore = topDetection['conf'] as double? ?? maxScore;
     }
 
     return {'label': bestLabel, 'detections': detections};
@@ -309,4 +371,57 @@ static Map<String, dynamic> _processAndRunAIWithBoxes(Map<String, dynamic> param
     return {'label': 'Clear Road', 'detections': []};
   }
 }
+
+  static List<Map<String, dynamic>> _nonMaxSuppression(
+    List<Map<String, dynamic>> detections, {
+    required double iouThreshold,
+  }) {
+    if (detections.length <= 1) return detections;
+
+    final sorted = [...detections]..sort(
+      (a, b) => (b['conf'] as double).compareTo(a['conf'] as double),
+    );
+
+    final kept = <Map<String, dynamic>>[];
+
+    while (sorted.isNotEmpty) {
+      final current = sorted.removeAt(0);
+      kept.add(current);
+
+      sorted.removeWhere((candidate) {
+        if ((candidate['label'] ?? '') != (current['label'] ?? '')) return false;
+        return _iou(current, candidate) >= iouThreshold;
+      });
+    }
+
+    return kept;
+  }
+
+  static double _iou(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final ax1 = (a['x1'] as double);
+    final ay1 = (a['y1'] as double);
+    final ax2 = (a['x2'] as double);
+    final ay2 = (a['y2'] as double);
+
+    final bx1 = (b['x1'] as double);
+    final by1 = (b['y1'] as double);
+    final bx2 = (b['x2'] as double);
+    final by2 = (b['y2'] as double);
+
+    final intersectionLeft = ax1 > bx1 ? ax1 : bx1;
+    final intersectionTop = ay1 > by1 ? ay1 : by1;
+    final intersectionRight = ax2 < bx2 ? ax2 : bx2;
+    final intersectionBottom = ay2 < by2 ? ay2 : by2;
+
+    final intersectionWidth = (intersectionRight - intersectionLeft).clamp(0.0, 1.0);
+    final intersectionHeight = (intersectionBottom - intersectionTop).clamp(0.0, 1.0);
+    final intersectionArea = intersectionWidth * intersectionHeight;
+
+    final areaA = (ax2 - ax1).clamp(0.0, 1.0) * (ay2 - ay1).clamp(0.0, 1.0);
+    final areaB = (bx2 - bx1).clamp(0.0, 1.0) * (by2 - by1).clamp(0.0, 1.0);
+    final unionArea = areaA + areaB - intersectionArea;
+
+    if (unionArea <= 0) return 0.0;
+    return intersectionArea / unionArea;
+  }
 }

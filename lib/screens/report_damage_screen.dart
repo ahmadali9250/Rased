@@ -405,7 +405,13 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating),
+        SnackBar(
+          content: Text(
+            isArabic ? 'حدث خطأ أثناء الإرسال: $e' : 'Error while submitting: $e',
+          ),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     } finally {
       if (mounted) setState(() => _isSubmitting = false);

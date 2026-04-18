@@ -33,6 +33,7 @@ class _MapScreenState extends State<MapScreen> {
       _language = _language == 'en' ? 'ar' : 'en';
       ApiService.currentLanguage = _language;
     });
+    _fetchLiveHazards();
   }
 
   final LatLng _ammanCenter = const LatLng(31.9539, 35.9106);
@@ -71,7 +72,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _fetchLiveHazards() async {
-    final liveData = await ApiService.fetchHazards();
+    final liveData = await ApiService.fetchHazards(language: _language);
     setState(() {
       _hazards = liveData;
       _isLoading = false;
@@ -408,8 +409,13 @@ class _MapScreenState extends State<MapScreen> {
               ],
             ),
             
-            const MyReportsScreen(),
-            const Center(child: Text('Notifications', style: TextStyle(color: Colors.white, fontSize: 24))),
+            MyReportsScreen(language: _language),
+            Center(
+              child: Text(
+                isArabic ? 'الإشعارات' : 'Notifications',
+                style: const TextStyle(color: Colors.white, fontSize: 24),
+              ),
+            ),
             AccountScreen(language: _language, onLanguageChanged: _toggleLanguage),
           ],
         ),
@@ -643,7 +649,13 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  String _getDamageTypeName(int typeId) {
+  String _getDamageTypeName(int typeId, {String? apiTypeName}) {
+    final normalized = apiTypeName?.trim();
+    if (normalized != null && normalized.isNotEmpty) {
+      if (_language == 'ar') return _translateHazardTypeName(normalized);
+      return normalized;
+    }
+
     switch (typeId) {
       case 1: return _language == 'ar' ? 'حفرة' : 'Pothole';
       case 2: return _language == 'ar' ? 'تشقق' : 'Crack';
@@ -653,9 +665,31 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  String _getStatusName(Hazard hazard) {
+    final apiStatusName = hazard.statusName?.trim();
+    if (apiStatusName != null && apiStatusName.isNotEmpty) {
+      if (_language == 'ar') return _translateStatusName(apiStatusName);
+      return apiStatusName;
+    }
+
+    switch (hazard.statusId) {
+      case 1:
+        return _language == 'ar' ? 'قيد المراجعة' : 'Pending';
+      case 2:
+        return _language == 'ar' ? 'قيد العمل' : 'In Progress';
+      case 3:
+        return _language == 'ar' ? 'محلول' : 'Resolved';
+      case 4:
+        return _language == 'ar' ? 'بلاغ غير صحيح' : 'Incorrect Report';
+      default:
+        return _language == 'ar' ? 'غير معروف' : 'Unknown';
+    }
+  }
+
   void _showHazardDetails(BuildContext context, Hazard hazard) {
     final isArabic = _language == 'ar';
-    final typeName = _getDamageTypeName(hazard.typeId);
+    final typeName = _getDamageTypeName(hazard.typeId, apiTypeName: hazard.typeName);
+    final statusName = _getStatusName(hazard);
     String addressText = '${hazard.location.latitude.toStringAsFixed(5)}, ${hazard.location.longitude.toStringAsFixed(5)}';
     bool isTranslatingLocation = true;
 
@@ -704,12 +738,24 @@ class _MapScreenState extends State<MapScreen> {
                             errorBuilder: (context, error, stackTrace) => Container(
                               height: 200, width: double.infinity,
                               decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(14), border: Border.all(color: Colors.white.withValues(alpha: 0.1))),
-                              child: const Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.broken_image, color: Colors.white38, size: 40), SizedBox(height: 8), Text('Image not found on server', style: TextStyle(color: Colors.white38))]),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.broken_image, color: Colors.white38, size: 40),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    isArabic ? 'الصورة غير موجودة على الخادم' : 'Image not found on server',
+                                    style: const TextStyle(color: Colors.white38),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
                       ),
                     _buildDetailRow(Icons.warning_amber_rounded, isArabic ? 'نوع الضرر:' : 'Type:', typeName),
+                    const SizedBox(height: 16),
+                    _buildDetailRow(Icons.flag_outlined, isArabic ? 'الحالة:' : 'Status:', statusName),
                     const SizedBox(height: 16),
                     _buildDetailRow(Icons.location_on, isArabic ? 'الموقع:' : 'Location:', addressText),
                     const SizedBox(height: 16),
@@ -735,5 +781,45 @@ class _MapScreenState extends State<MapScreen> {
         Expanded(child: Text(value, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold))),
       ],
     );
+  }
+
+  String _translateHazardTypeName(String englishName) {
+    final normalized = englishName.toLowerCase().trim();
+    switch (normalized) {
+      case 'pothole':
+        return 'حفرة';
+      case 'crack':
+        return 'تشقق';
+      case 'faded lines':
+        return 'خطوط باهتة';
+      case 'broken manhole':
+        return 'مناهل مكسورة';
+      case 'street light failure':
+        return 'تعطل إنارة الشارع';
+      case 'water leakage':
+        return 'تسرب مياه';
+      case 'other':
+        return 'أخرى';
+      default:
+        return englishName;
+    }
+  }
+
+  String _translateStatusName(String englishName) {
+    final normalized = englishName.toLowerCase().trim();
+    switch (normalized) {
+      case 'pending':
+        return 'قيد المراجعة';
+      case 'in progress':
+        return 'قيد العمل';
+      case 'resolved':
+        return 'محلول';
+      case 'incorrect report':
+        return 'بلاغ غير صحيح';
+      case 'rejected (ai)':
+        return 'مرفوض';
+      default:
+        return englishName;
+    }
   }
 }

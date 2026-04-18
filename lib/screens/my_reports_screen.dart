@@ -5,7 +5,9 @@ import '../services/api_service.dart';
 
 /// Displays a historical list of hazards specifically reported by the logged-in user.
 class MyReportsScreen extends StatefulWidget {
-  const MyReportsScreen({super.key});
+  final String language;
+
+  const MyReportsScreen({super.key, required this.language});
 
   @override
   State<MyReportsScreen> createState() => _MyReportsScreenState();
@@ -14,7 +16,7 @@ class MyReportsScreen extends StatefulWidget {
 class _MyReportsScreenState extends State<MyReportsScreen> {
   List<Hazard> _myReports = [];
   bool _isLoading = true;
-  late String _language = ApiService.currentLanguage;
+  late String _language = widget.language;
 
   @override
   void initState() {
@@ -22,9 +24,18 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     _fetchMyReports();
   }
 
+  @override
+  void didUpdateWidget(covariant MyReportsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.language != widget.language) {
+      _language = widget.language;
+      _fetchMyReports();
+    }
+  }
+
   /// FIXED: Now explicitly calls the backend developer's new 'my-reports' endpoint!
   Future<void> _fetchMyReports() async {
-    final myData = await ApiService.fetchMyReports();
+    final myData = await ApiService.fetchMyReports(language: _language);
 
     if (mounted) {
       setState(() {
@@ -49,7 +60,13 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
   }
 
   /// Translates the Status ID from the database into a readable label.
-  String _getStatusText(int statusId, bool isArabic) {
+  String _getStatusText(Hazard hazard, bool isArabic) {
+    final apiName = hazard.statusName?.trim();
+    if (apiName != null && apiName.isNotEmpty) {
+      return isArabic ? _translateStatusName(apiName) : apiName;
+    }
+
+    final statusId = hazard.statusId;
     switch (statusId) {
       case 1: return isArabic ? 'قيد المراجعة' : 'Pending';
       case 2: return isArabic ? 'قيد العمل' : 'In Progress';
@@ -71,7 +88,13 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
   }
 
   /// Translates the Hazard Type ID from the database into a readable label.
-  String _getHazardName(int typeId, bool isArabic) {
+  String _getHazardName(Hazard hazard, bool isArabic) {
+    final apiName = hazard.typeName?.trim();
+    if (apiName != null && apiName.isNotEmpty) {
+      return isArabic ? _translateHazardTypeName(apiName) : apiName;
+    }
+
+    final typeId = hazard.typeId;
     switch (typeId) {
       case 1: return isArabic ? 'حفرة' : 'Pothole';
       case 2: return isArabic ? 'تشقق' : 'Crack';
@@ -133,8 +156,8 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
 
   /// Builds a beautifully styled glassmorphism card for a single report.
   Widget _buildReportCard(Hazard report, bool isArabic) {
-    final String typeName = _getHazardName(report.typeId, isArabic);
-    final String statusText = _getStatusText(report.statusId, isArabic);
+    final String typeName = _getHazardName(report, isArabic);
+    final String statusText = _getStatusText(report, isArabic);
     final Color statusColor = _getStatusColor(report.statusId);
 
     return ClipRRect(
@@ -244,5 +267,45 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
         ),
       ),
     );
+  }
+
+  String _translateHazardTypeName(String englishName) {
+    final normalized = englishName.toLowerCase().trim();
+    switch (normalized) {
+      case 'pothole':
+        return 'حفرة';
+      case 'crack':
+        return 'تشقق';
+      case 'faded lines':
+        return 'خطوط باهتة';
+      case 'broken manhole':
+        return 'مناهل مكسورة';
+      case 'street light failure':
+        return 'تعطل إنارة الشارع';
+      case 'water leakage':
+        return 'تسرب مياه';
+      case 'other':
+        return 'أخرى';
+      default:
+        return englishName;
+    }
+  }
+
+  String _translateStatusName(String englishName) {
+    final normalized = englishName.toLowerCase().trim();
+    switch (normalized) {
+      case 'pending':
+        return 'قيد المراجعة';
+      case 'in progress':
+        return 'قيد العمل';
+      case 'resolved':
+        return 'محلول';
+      case 'incorrect report':
+        return 'بلاغ غير صحيح';
+      case 'rejected (ai)':
+        return 'مرفوض';
+      default:
+        return englishName;
+    }
   }
 }
