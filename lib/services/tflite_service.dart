@@ -694,17 +694,10 @@ class TFLiteService {
           .map((dynamic e) => e.toString())
           .toList();
 
-      try {
-        final nnApiOptions = InterpreterOptions()
-          ..threads = threadCount
-          ..useNnApiForAndroid = true;
-        interpreter = Interpreter.fromBuffer(modelBytes, options: nnApiOptions);
-      } catch (_) {
-        final cpuOptions = InterpreterOptions()
-          ..threads = threadCount
-          ..useNnApiForAndroid = false;
-        interpreter = Interpreter.fromBuffer(modelBytes, options: cpuOptions);
-      }
+      final cpuOptions = InterpreterOptions()
+        ..threads = threadCount
+        ..useNnApiForAndroid = false;
+      interpreter = Interpreter.fromBuffer(modelBytes, options: cpuOptions);
       interpreter.allocateTensors();
 
       mainSendPort.send({'type': 'ready'});
@@ -919,10 +912,17 @@ class TFLiteService {
             ? labels[bestClassIndex]
             : 'Class $bestClassIndex';
 
-        final cx = val(0, i);
-        final cy = val(1, i);
-        final w = val(2, i);
-        final h = val(3, i);
+        double cx = val(0, i);
+        double cy = val(1, i);
+        double w = val(2, i);
+        double h = val(3, i);
+
+        if (cx > 2.0 || cy > 2.0) {
+          cx /= inputW;
+          cy /= inputH;
+          w /= inputW;
+          h /= inputH;
+        }
 
         detections.add({
           'x1': (cx - w / 2).clamp(0.0, 1.0),
