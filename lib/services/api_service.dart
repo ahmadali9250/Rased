@@ -358,7 +358,16 @@ class ApiService {
     required int typeId,
     String? language,
   }) async {
-    if (_token == null) return false;
+    if (_token == null) {
+      await OfflineQueue.save({
+        'lat': latitude,
+        'lon': longitude,
+        'typeId': typeId,
+        'imagePath': photo.path,
+        'time': DateTime.now().toIso8601String(),
+      });
+      return false;
+    }
     try {
       final requestLanguage = (language ?? currentLanguage).trim().isEmpty
           ? 'en'
@@ -404,7 +413,15 @@ class ApiService {
     required double longitude,
     required int typeId,
   }) async {
-    if (_token == null) return false;
+    if (_token == null) {
+      await OfflineQueue.save({
+        'lat': latitude,
+        'lon': longitude,
+        'typeId': typeId,
+        'time': DateTime.now().toIso8601String(),
+      });
+      return false;
+    }
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/Hazards/report-location'),
