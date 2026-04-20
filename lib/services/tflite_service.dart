@@ -16,16 +16,13 @@ class TFLiteService {
   static final TFLiteService _instance = TFLiteService._internal();
   factory TFLiteService() => _instance;
 
-  static const double _minDetectionScore = 0.06;
-  static const Duration _inferenceTimeout = Duration(milliseconds: 1100);
+  static const double _minDetectionScore = 0.08;
+  static const Duration _inferenceTimeout = Duration(milliseconds: 850);
   static const int _maxConsecutiveIsolateFailures = 3;
-  static const Duration _localFallbackMinInterval = Duration(
-    milliseconds: 900,
-  );
   static const String _assetFloat16 = 'assets/best_float16.tflite';
   static const String _assetFloat32 = 'assets/best_float32.tflite';
   static const String _modePrefKey = 'rased_ai_model_mode';
-  static AiModelMode _preferredModelMode = AiModelMode.float32;
+  static AiModelMode _preferredModelMode = AiModelMode.float16;
   static bool _preferredModelModeLoaded = false;
 
   Interpreter? _interpreter;
@@ -43,7 +40,6 @@ class TFLiteService {
   Future<void>? _initializationTask;
   bool _isRecoveringInferenceIsolate = false;
   int _consecutiveIsolateFailures = 0;
-  DateTime? _lastLocalFallbackAt;
 
   int _inputWidth = 0;
   int _inputHeight = 0;
@@ -74,9 +70,9 @@ class TFLiteService {
     return AiModelMode.float32;
   }
 
-  int _threadsForMode(AiModelMode mode) {
-    // Prioritize preview smoothness: fewer threads reduces CPU starvation of camera/UI.
-    return mode == AiModelMode.float32 ? 1 : 2;
+  int _threadsForMode(AiModelMode _) {
+    // Keep single-thread inference to reduce CPU contention with camera/UI.
+    return 1;
   }
 
   List<String> _orderedCandidateModelAssets(AiModelMode preferredMode) {
@@ -94,7 +90,7 @@ class TFLiteService {
       final prefs = await SharedPreferences.getInstance();
       _preferredModelMode = _modeFromPref(prefs.getString(_modePrefKey));
     } catch (_) {
-      _preferredModelMode = AiModelMode.float32;
+      _preferredModelMode = AiModelMode.float16;
     }
 
     _preferredModelModeLoaded = true;
@@ -203,13 +199,11 @@ class TFLiteService {
       _inputHeight = 0;
       _consecutiveIsolateFailures = 0;
       _isRecoveringInferenceIsolate = false;
-      _lastLocalFallbackAt = null;
 
       final candidateAssets = _orderedCandidateModelAssets(desiredMode);
       for (final assetPath in candidateAssets) {
         try {
-          final mode = _modeFromAsset(assetPath);
-          final fallbackThreads = mode == AiModelMode.float32 ? 1 : 2;
+          const fallbackThreads = 1;
           final cpuOptions = InterpreterOptions()
             ..threads = fallbackThreads
             ..useNnApiForAndroid = false;
@@ -476,7 +470,6 @@ class TFLiteService {
     _activeModelAsset = null;
     _inputWidth = 0;
     _inputHeight = 0;
-    _lastLocalFallbackAt = null;
   }
 
   // --- MANUAL MODE (Still runs normally) ---
@@ -616,7 +609,7 @@ class TFLiteService {
   ) async {
     if (_inferenceSendPort == null) {
       _markIsolateFailure();
-      return _tryLocalFallback(cameraImage);
+      return _emptyDetectionResult();
     }
 
     final isolateResult = await _predictFrameWithBoxesViaIsolate(cameraImage);
@@ -627,39 +620,7 @@ class TFLiteService {
     }
 
     _markIsolateFailure();
-    return _tryLocalFallback(cameraImage);
-  }
-
-  Future<Map<String, dynamic>> _tryLocalFallback(
-    CameraImage cameraImage,
-  ) async {
-    final lastFallbackAt = _lastLocalFallbackAt;
-    final now = DateTime.now();
-    if (lastFallbackAt != null &&
-        now.difference(lastFallbackAt) < _localFallbackMinInterval) {
-      return _emptyDetectionResult();
-    }
-
-    _lastLocalFallbackAt = now;
-    return predictFrameWithBoxesAllowLocalFallback(cameraImage);
-  }
-
-  Future<Map<String, dynamic>> predictFrameWithBoxesAllowLocalFallback(
-    CameraImage cameraImage,
-  ) async {
-    if (_interpreter == null || _labels == null) {
-      return _emptyDetectionResult();
-    }
-
-    try {
-      final image = _cameraImageToImage(cameraImage);
-      if (image == null) {
-        return _emptyDetectionResult();
-      }
-      return _runInterpreterWithBoxesStatic(image, _interpreter!, _labels!);
-    } catch (_) {
-      return _emptyDetectionResult();
-    }
+    return _emptyDetectionResult();
   }
 
   img.Image? _cameraImageToImage(CameraImage cameraImage) {

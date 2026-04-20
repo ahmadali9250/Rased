@@ -19,7 +19,6 @@ class LiveCameraScreen extends StatefulWidget {
 }
 
 class _LiveCameraScreenState extends State<LiveCameraScreen> {
-  static const bool _autoReportWithPhoto = true;
   static const bool _allowTakePictureFallback = false;
 
   CameraController? _cameraController;
@@ -35,7 +34,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   final int _fpsIntervalMs = 333;
 
   String _currentPrediction = 'Scanning road...';
-  AiModelMode _activeModelMode = AiModelMode.float32;
+  AiModelMode _activeModelMode = AiModelMode.float16;
   bool _isSwitchingModel = false;
 
   bool _isUploadingReport = false;
@@ -45,10 +44,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   final int _duplicateReportWindowSeconds = 30;
   final double _duplicateReportDistanceMeters = 20.0;
 
-  final double _uiConfidenceThreshold = 0.08;
-  final double _reportConfidenceThreshold = 0.18;
-  final double _reportMinBoxArea = 0.015;
-  final int _requiredConsecutivePotholeFrames = 2;
+  final double _uiConfidenceThreshold = 0.10;
+  final double _reportConfidenceThreshold = 0.22;
+  final double _reportMinBoxArea = 0.018;
+  final int _requiredConsecutivePotholeFrames = 3;
   int _potholeFrameStreak = 0;
   Position? _lastValidPosition;
 
@@ -173,6 +172,9 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
 
   Future<void> _initializeCameraAndAI() async {
     await _tfliteService.initializeModel();
+    if (_tfliteService.activeModelMode != AiModelMode.float16) {
+      await _tfliteService.switchModelMode(AiModelMode.float16);
+    }
     _activeModelMode = _tfliteService.activeModelMode;
 
     final cameras = await availableCameras();
@@ -413,38 +415,6 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
         throw Exception('Camera Error: Camera controller not initialized');
       }
 
-      // Stable default: avoid camera stream interruption during auto reporting.
-      if (!_autoReportWithPhoto) {
-        int typeId = 1;
-        bool success =
-            await ApiService.submitLocationOnly(
-              latitude: position.latitude,
-              longitude: position.longitude,
-              typeId: typeId,
-            ).timeout(
-              const Duration(seconds: 20),
-              onTimeout: () =>
-                  throw TimeoutException('API request timeout (>20s)'),
-            );
-        if (success) _markReportSent(position);
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                success
-                    ? (isArabic ? '✅ تم إرسال البلاغ!' : '✅ Report sent!')
-                    : (isArabic ? '❌ فشل الإرسال' : '❌ Failed to send'),
-              ),
-              backgroundColor: success ? Colors.green : Colors.red,
-              behavior: SnackBarBehavior.floating,
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-        return;
-      }
-
       XFile? capturedPhoto;
       try {
         final captured = await _capturePhotoForReport(sourceFrame: sourceFrame);
@@ -533,8 +503,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   Future<XFile> _buildReportPhotoFromFrame(CameraImage frame) async {
     final jpgBytes = _cameraImageToJpegBytes(
       frame,
-      targetWidth: 320,
-      quality: 72,
+      targetWidth: 192,
+      quality: 60,
     );
     if (jpgBytes == null || jpgBytes.isEmpty) {
       throw Exception('Photo Capture Error: Cannot convert frame to JPEG');

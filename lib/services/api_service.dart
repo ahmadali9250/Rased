@@ -51,8 +51,8 @@ class Hazard {
 
   String? get fullImageUrl {
     if (imagePath == null || imagePath!.isEmpty) return null;
-    if (imagePath!.startsWith('http')) return imagePath; 
-    return 'https://tareeq-api.onrender.com/$imagePath'; 
+    if (imagePath!.startsWith('http')) return imagePath;
+    return 'https://tareeq-api.onrender.com/$imagePath';
   }
 }
 
@@ -60,8 +60,9 @@ class Hazard {
 // 2. API SERVICE MANAGER
 // ==========================================
 class ApiService {
-  static const String baseUrl = 'https://rased-app-9lv5h.ondigitalocean.app/api';
-  
+  static const String baseUrl =
+      'https://rased-app-9lv5h.ondigitalocean.app/api';
+
   static String? _token;
   static String? lastAuthError;
   static String? loggedInEmail;
@@ -77,19 +78,19 @@ class ApiService {
   static bool get isLoggedIn => _token != null;
 
   // --- SESSION PERSISTENCE ---
-  
+
   static Future<void> loadSession() async {
     final prefs = await SharedPreferences.getInstance();
     _token = prefs.getString('token');
     loggedInEmail = prefs.getString('email');
     loggedInRole = prefs.getString('role');
-    
+
     // Load new profile variables from cache if available
     userName = prefs.getString('userName') ?? "Unknown";
     userPhone = prefs.getString('userPhone') ?? "Unknown";
     userEmail = prefs.getString('userEmail') ?? loggedInEmail ?? "Unknown";
     userRole = prefs.getString('userRole') ?? loggedInRole ?? "User";
-    
+
     if (_token != null) {
       debugPrint("✅ Found saved session! Welcome back $loggedInEmail");
     }
@@ -113,7 +114,11 @@ class ApiService {
   // ------------------------------------------
   // AUTHENTICATION ENDPOINTS
   // ------------------------------------------
-  static Future<bool> login(String nationalId, String password, {String? language}) async {
+  static Future<bool> login(
+    String nationalId,
+    String password, {
+    String? language,
+  }) async {
     lastAuthError = null;
     try {
       final requestLanguage = (language ?? currentLanguage).trim().isEmpty
@@ -126,10 +131,7 @@ class ApiService {
           'Content-Type': 'application/json',
           'Accept-Language': requestLanguage,
         },
-        body: jsonEncode({
-          "nationalId": nationalId,
-          "password": password,
-        }),
+        body: jsonEncode({"nationalId": nationalId, "password": password}),
       );
 
       if (response.statusCode == 200) {
@@ -147,8 +149,8 @@ class ApiService {
         }
 
         loggedInEmail = userData['email']?.toString();
-        loggedInRole = userData['role']?.toString(); 
-        
+        loggedInRole = userData['role']?.toString();
+
         // ✅ NEW LINES: Read and save the profile data from the backend
         userName = userData['name']?.toString() ?? "Unknown";
         userPhone = userData['phoneNumber']?.toString() ?? "Unknown";
@@ -159,7 +161,7 @@ class ApiService {
         await prefs.setString('token', _token!);
         await prefs.setString('email', loggedInEmail ?? '');
         await prefs.setString('role', loggedInRole ?? '');
-        
+
         // Cache the new variables so they survive app restarts
         await prefs.setString('userName', userName);
         await prefs.setString('userPhone', userPhone);
@@ -210,7 +212,7 @@ class ApiService {
           "password": password,
           "nationalId": nationalId,
           "name": name,
-          "phoneNumber": phone
+          "phoneNumber": phone,
         }),
       );
 
@@ -222,21 +224,27 @@ class ApiService {
     }
   }
 
-  static Future<bool> registerAdmin(String email, String password, String nationalId, String name, String phone) async {
+  static Future<bool> registerAdmin(
+    String email,
+    String password,
+    String nationalId,
+    String name,
+    String phone,
+  ) async {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/Auth/RegisterAdmin'),
         headers: {
-          'Content-Type': 'application/json', 
+          'Content-Type': 'application/json',
           'Accept-Language': 'en',
-          'Authorization': 'Bearer $_token' 
+          'Authorization': 'Bearer $_token',
         },
         body: jsonEncode({
           "email": email,
           "password": password,
           "nationalId": nationalId,
           "name": name,
-          "phoneNumber": phone
+          "phoneNumber": phone,
         }),
       );
 
@@ -250,7 +258,7 @@ class ApiService {
   // ------------------------------------------
   // HAZARD MANAGEMENT ENDPOINTS
   // ------------------------------------------
-  
+
   static Future<bool> updateHazardStatus(
     String hazardId,
     int newStatusId, {
@@ -269,7 +277,9 @@ class ApiService {
           'Accept-Language': requestLanguage,
         },
       );
-      if (response.statusCode == 202 || response.statusCode == 200 || response.statusCode == 204) {
+      if (response.statusCode == 202 ||
+          response.statusCode == 200 ||
+          response.statusCode == 204) {
         return true;
       }
       return false;
@@ -310,7 +320,7 @@ class ApiService {
           : (language ?? currentLanguage).trim();
 
       final response = await http.get(
-        Uri.parse('$baseUrl/Hazards/my-reports'), 
+        Uri.parse('$baseUrl/Hazards/my-reports'),
         headers: {
           'Authorization': 'Bearer $_token',
           'Accept-Language': requestLanguage,
@@ -334,7 +344,7 @@ class ApiService {
           : (language ?? currentLanguage).trim();
 
       final response = await http.get(
-        Uri.parse('$baseUrl/Hazards/unsolved'), 
+        Uri.parse('$baseUrl/Hazards/unsolved'),
         headers: {
           'Authorization': 'Bearer $_token',
           'Accept-Language': requestLanguage,
@@ -373,19 +383,27 @@ class ApiService {
           ? 'en'
           : (language ?? currentLanguage).trim();
 
-      var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/Hazards/report'));
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/Hazards/report'),
+      );
       request.headers['Authorization'] = 'Bearer $_token';
       request.headers['Accept-Language'] = requestLanguage;
       request.fields['Latitude'] = latitude.toString();
       request.fields['Longitude'] = longitude.toString();
       request.fields['TypeId'] = typeId.toString();
-      request.fields['StatusID'] = '1'; 
+      request.fields['StatusID'] = '1';
 
       final bytes = await photo.readAsBytes();
-      request.files.add(http.MultipartFile.fromBytes('Image', bytes, filename: photo.name));
+      request.files.add(
+        http.MultipartFile.fromBytes('Image', bytes, filename: photo.name),
+      );
 
       var response = await request.send();
-      if (response.statusCode == 201 || response.statusCode == 200 || response.statusCode == 409) return true;
+      if (response.statusCode == 201 ||
+          response.statusCode == 200 ||
+          response.statusCode == 409)
+        return true;
 
       // ❌ Upload failed (e.g., server returned an error) - Save locally
       debugPrint("❌ submitReport failed with status: ${response.statusCode}");
@@ -401,54 +419,6 @@ class ApiService {
       await OfflineQueue.save({
         'lat': latitude, 'lon': longitude, 'typeId': typeId,
         'imagePath': photo.path, // Save image path to upload later
-        'time': DateTime.now().toIso8601String(),
-      });
-      return false;
-    }
-  }
-
-  // Send report without photo (from smart camera)
-  static Future<bool> submitLocationOnly({
-    required double latitude,
-    required double longitude,
-    required int typeId,
-  }) async {
-    if (_token == null) {
-      await OfflineQueue.save({
-        'lat': latitude,
-        'lon': longitude,
-        'typeId': typeId,
-        'time': DateTime.now().toIso8601String(),
-      });
-      return false;
-    }
-    try {
-      final response = await http.post(
-        Uri.parse('$baseUrl/Hazards/report-location'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $_token',
-        },
-        body: jsonEncode({
-          'Latitude': latitude,
-          'Longitude': longitude,
-          'TypeId': typeId,
-          'StatusID': 1,
-        }),
-      );
-
-      if (response.statusCode == 200 || response.statusCode == 201 || response.statusCode == 409) return true;
-
-      // ❌ Failed — save locally
-      await OfflineQueue.save({
-        'lat': latitude, 'lon': longitude, 'typeId': typeId,
-        'time': DateTime.now().toIso8601String(),
-      });
-      return false;
-    } catch (e) {
-      // ❌ No internet — save locally
-      await OfflineQueue.save({
-        'lat': latitude, 'lon': longitude, 'typeId': typeId,
         'time': DateTime.now().toIso8601String(),
       });
       return false;
