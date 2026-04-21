@@ -265,14 +265,15 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
                   _cooldownSeconds;
 
           if (canReport) {
-            if (await Vibration.hasVibrator()) {
+            
               Vibration.vibrate(duration: 400);
-            }
+            
 
             _lastReportTime = DateTime.now();
             _isReporting = true;
             _potholeFrameStreak = 0;
 
+            _stopAIDetectionStream(updateUi: false);
             unawaited(_autoSubmitReport(sourceFrame: image));
           }
         }
@@ -494,11 +495,16 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
         );
       }
     } finally {
-      _isReporting = false;
-      if (mounted) setState(() => _isUploadingReport = false);
-      _isUploadingReport = false;
-    }
+  _isReporting = false;
+  if (mounted) setState(() => _isUploadingReport = false);
+  _isUploadingReport = false;
+  // أعد تشغيل الـ stream بعد الإرسال
+  if (mounted && _cameraController != null && 
+      _cameraController!.value.isInitialized &&
+      !_cameraController!.value.isStreamingImages) {
+    _startFastAIDetectionStream();
   }
+}
 
   Future<XFile> _buildReportPhotoFromFrame(CameraImage frame) async {
     final jpgBytes = _cameraImageToJpegBytes(

@@ -17,7 +17,7 @@ class TFLiteService {
   factory TFLiteService() => _instance;
 
   static const double _minDetectionScore = 0.08;
-  static const Duration _inferenceTimeout = Duration(milliseconds: 850);
+static const Duration _inferenceTimeout = Duration(milliseconds: 1500);
   static const int _maxConsecutiveIsolateFailures = 3;
   static const String _assetFloat16 = 'assets/best_float16.tflite';
   static const String _assetFloat32 = 'assets/best_float32.tflite';
@@ -72,7 +72,7 @@ class TFLiteService {
 
   int _threadsForMode(AiModelMode _) {
     // Keep single-thread inference to reduce CPU contention with camera/UI.
-    return 1;
+    return 2;
   }
 
   List<String> _orderedCandidateModelAssets(AiModelMode preferredMode) {
