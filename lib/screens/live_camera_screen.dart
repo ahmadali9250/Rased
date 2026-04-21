@@ -504,7 +504,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
       !_cameraController!.value.isStreamingImages) {
     _startFastAIDetectionStream();
   }
-}
+}}
+
 
   Future<XFile> _buildReportPhotoFromFrame(CameraImage frame) async {
     final jpgBytes = _cameraImageToJpegBytes(
