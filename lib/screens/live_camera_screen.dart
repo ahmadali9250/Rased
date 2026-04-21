@@ -59,7 +59,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
 
     _cameraController = CameraController(
       backCamera,
-      ResolutionPreset.low, 
+      ResolutionPreset.medium, 
       enableAudio: false, 
     );
 

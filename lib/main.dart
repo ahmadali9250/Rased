@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/login_screen.dart';
 import 'screens/map_screen.dart';
+import 'screens/onboarding_screen.dart';
 import 'services/tflite_service.dart';
 import 'services/api_service.dart';
 
@@ -10,6 +12,9 @@ void main() async {
 
   // 1. Load the saved session from the phone's hard drive!
   await ApiService.loadSession();
+  
+  // Open SharedPreferences to check onboarding status
+  final prefs = await SharedPreferences.getInstance();
 
   // 2. Boot up the TFLite AI Brain
   try {
@@ -20,11 +25,28 @@ void main() async {
     debugPrint('❌ CRITICAL: Failed to initialize TFLite Model on startup: $e');
   }
 
-  runApp(const RasedApp());
+  // 3. Check if they have seen the onboarding screen
+  bool hasSeenOnboarding = prefs.getBool('hasSeenOnboarding') ?? false;
+
+  // 4. Determine the starting screen based on their history
+  Widget startingScreen;
+  if (!hasSeenOnboarding) {
+    startingScreen = const OnboardingScreen(); // First time ever opening the app
+  } else if (ApiService.isLoggedIn) {
+    startingScreen = const MapScreen(); // Returning user, already logged in
+  } else {
+    startingScreen = const LoginScreen(); // Returning user, but needs to log in
+  }
+
+  // Pass the chosen screen into the app
+  runApp(RasedApp(initialScreen: startingScreen));
 }
 
 class RasedApp extends StatelessWidget {
-  const RasedApp({super.key});
+  final Widget initialScreen; // Variable to hold the starting screen
+
+  // Require the initialScreen in the constructor
+  const RasedApp({super.key, required this.initialScreen});
 
   @override
   Widget build(BuildContext context) {
@@ -49,8 +71,8 @@ class RasedApp extends StatelessWidget {
         ),
       ),
       
-      // --- SKIP LOGIN IF TOKEN EXISTS ---
-      home: ApiService.isLoggedIn ? const MapScreen() : const LoginScreen(),
+      // --- START ON THE CORRECT SCREEN ---
+      home: initialScreen, // Use the calculated screen here
     );
   }
 }
