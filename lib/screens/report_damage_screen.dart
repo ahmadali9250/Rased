@@ -24,12 +24,11 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
   String _selectedDamageType = 'Pothole';
   final TextEditingController _descriptionController = TextEditingController();
 
+  // 🚨 FIXED: Removed "Other" and "Faded Lines". Strictly matches the database now.
   final List<String> _damageTypes = [
     'Pothole',
     'Crack',
-    'Faded Lines',
     'Broken Manhole',
-    'Other',
   ];
 
   File? _selectedImage;
@@ -394,9 +393,10 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
         );
         Navigator.pop(context); // Close screen, return to map
       } else {
+        // 🚨 Displays Abdallah's EXACT error message from the database!
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(isArabic ? '❌ فشل الإرسال إلى الخادم.' : '❌ Failed to upload to the server.'),
+            content: Text(ApiService.lastReportError ?? (isArabic ? '❌ فشل الإرسال إلى الخادم.' : '❌ Failed to upload to the server.')),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -443,24 +443,24 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
     );
   }
 
+  // 🚨 FIXED: Removed "Other" and "Faded Lines" translations.
   String _translateDamageType(String type, bool isArabic) {
     if (!isArabic) return type;
     switch (type) {
       case 'Pothole': return 'حفرة';
       case 'Crack': return 'تشقق';
-      case 'Faded Lines': return 'خطوط باهتة';
-      case 'Broken Manhole': return 'مناهل مكسورة';
-      default: return 'أخرى';
+      case 'Broken Manhole': return 'منهل';
+      default: return 'حفرة';
     }
   }
 
+  // 🚨 FIXED: Removed unused mappings. Now strictly maps to 1, 2, and 4.
   int _getDamageTypeId(String type) {
     switch (type) {
       case 'Pothole': return 1;
       case 'Crack': return 2;
-      case 'Faded Lines': return 3;
       case 'Broken Manhole': return 4;
-      default: return 5;
+      default: return 1;
     }
   }
 }

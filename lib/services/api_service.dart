@@ -65,11 +65,11 @@ class ApiService {
 
   static String? _token;
   static String? lastAuthError;
+  static String? lastReportError; // ✅ NEW: Stores Abdallah's exact error message
   static String? loggedInEmail;
   static String? loggedInRole;
   static String currentLanguage = 'en';
 
-  // ✅ NEW VARIABLES for Profile Screen
   static String userName = "Unknown";
   static String userPhone = "Unknown";
   static String userEmail = "Unknown";
@@ -78,14 +78,12 @@ class ApiService {
   static bool get isLoggedIn => _token != null;
 
   // --- SESSION PERSISTENCE ---
-
   static Future<void> loadSession() async {
     final prefs = await SharedPreferences.getInstance();
     _token = prefs.getString('token');
     loggedInEmail = prefs.getString('email');
     loggedInRole = prefs.getString('role');
 
-    // Load new profile variables from cache if available
     userName = prefs.getString('userName') ?? "Unknown";
     userPhone = prefs.getString('userPhone') ?? "Unknown";
     userEmail = prefs.getString('userEmail') ?? loggedInEmail ?? "Unknown";
@@ -137,7 +135,6 @@ class ApiService {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
 
-        // Support both flat and nested response shapes.
         final userData = data['user'] is Map<String, dynamic>
             ? data['user'] as Map<String, dynamic>
             : data;
@@ -150,8 +147,6 @@ class ApiService {
 
         loggedInEmail = userData['email']?.toString();
         loggedInRole = userData['role']?.toString();
-
-        // ✅ NEW LINES: Read and save the profile data from the backend
         userName = userData['name']?.toString() ?? "Unknown";
         userPhone = userData['phoneNumber']?.toString() ?? "Unknown";
         userEmail = userData['email']?.toString() ?? "Unknown";
@@ -161,14 +156,11 @@ class ApiService {
         await prefs.setString('token', _token!);
         await prefs.setString('email', loggedInEmail ?? '');
         await prefs.setString('role', loggedInRole ?? '');
-
-        // Cache the new variables so they survive app restarts
         await prefs.setString('userName', userName);
         await prefs.setString('userPhone', userPhone);
         await prefs.setString('userEmail', userEmail);
         await prefs.setString('userRole', userRole);
 
-        debugPrint("✅ Successfully logged in! Token saved permanently.");
         return true;
       }
 
@@ -217,7 +209,6 @@ class ApiService {
       );
 
       if (response.statusCode == 200 || response.statusCode == 201) return true;
-      debugPrint("❌ Citizen Registration failed: ${response.body}");
       return false;
     } catch (e) {
       return false;
@@ -368,16 +359,17 @@ class ApiService {
     required int typeId,
     String? language,
   }) async {
+    lastReportError = null; // ✅ Reset error before starting
+    
     if (_token == null) {
+      lastReportError = "You must be logged in to send a report.";
       await OfflineQueue.save({
-        'lat': latitude,
-        'lon': longitude,
-        'typeId': typeId,
-        'imagePath': photo.path,
-        'time': DateTime.now().toIso8601String(),
+        'lat': latitude, 'lon': longitude, 'typeId': typeId,
+        'imagePath': photo.path, 'time': DateTime.now().toIso8601String(),
       });
       return false;
     }
+    
     try {
       final requestLanguage = (language ?? currentLanguage).trim().isEmpty
           ? 'en'
@@ -400,26 +392,38 @@ class ApiService {
       );
 
       var response = await request.send();
+      var responseData = await response.stream.bytesToString(); // ✅ Read Abdallah's API body!
+
       if (response.statusCode == 201 ||
           response.statusCode == 200 ||
-          response.statusCode == 409)
+          response.statusCode == 409) {
         return true;
+      }
 
-      // ❌ Upload failed (e.g., server returned an error) - Save locally
-      debugPrint("❌ submitReport failed with status: ${response.statusCode}");
+      // Extract EXACT error message so the UI can show it
+      try {
+        var decoded = jsonDecode(responseData);
+        // Look for 'message', then 'error', then fallback to generic string
+        lastReportError = decoded['message'] ?? decoded['error'] ?? "فشل الإرسال: ${response.statusCode}";
+      } catch (_) {
+        lastReportError = "حدث خطأ غير متوقع (${response.statusCode})";
+      }
+
+      debugPrint("❌ submitReport failed: $lastReportError");
+      
+      // Save locally if it failed
       await OfflineQueue.save({
         'lat': latitude, 'lon': longitude, 'typeId': typeId,
-        'imagePath': photo.path, // Save image path to upload later
-        'time': DateTime.now().toIso8601String(),
+        'imagePath': photo.path, 'time': DateTime.now().toIso8601String(),
       });
       return false;
+      
     } catch (e) {
-      // ❌ No internet or other error - Save locally
+      lastReportError = "لا يوجد اتصال بالإنترنت.";
       debugPrint("❌ submitReport error: $e");
       await OfflineQueue.save({
         'lat': latitude, 'lon': longitude, 'typeId': typeId,
-        'imagePath': photo.path, // Save image path to upload later
-        'time': DateTime.now().toIso8601String(),
+        'imagePath': photo.path, 'time': DateTime.now().toIso8601String(),
       });
       return false;
     }
