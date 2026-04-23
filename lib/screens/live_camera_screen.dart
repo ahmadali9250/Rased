@@ -157,7 +157,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
         position = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high
         ).timeout(
-          const Duration(seconds: 10),
+          const Duration(seconds: 30),
           onTimeout: () => throw TimeoutException('GPS timeout'),
         );
 

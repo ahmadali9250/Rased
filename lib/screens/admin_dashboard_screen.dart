@@ -304,7 +304,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                         icon: const Icon(Icons.security, size: 20),
                         style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                         onPressed: () => _handleCreateAccount(true),
-                        label: Text(isArabic ? 'ترقية لحساب مسؤول' : 'Create Admin Account', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        label: Text(isArabic ? 'عمل حساب مسؤول ' : 'Create Admin Account', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                       ),
                     ),
                 ],
