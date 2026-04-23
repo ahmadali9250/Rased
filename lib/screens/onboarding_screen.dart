@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'login_screen.dart'; // Make sure this imports your actual login/home screen!
+import 'login_screen.dart'; // Ensure this file exists and contains LoginScreen
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -14,7 +14,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   int _currentPage = 0;
   bool isArabic = true;
 
-  // القائمة المحدثة مع الميزة الجديدة في الترتيب الثالث
   final List<Map<String, dynamic>> onboardingData = [
     {
       "titleAr": "مرحباً بك في راصد",
@@ -30,7 +29,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       "descEn": "The app automatically detects potholes, broken manholes, and cracks using AI to ensure safer roads.",
       "icon": Icons.add_road,
     },
-    // --- العنصر الجديد (الترتيب الثالث) ---
     {
       "titleAr": "تصوير يدوي ورفع بلاغات",
       "titleEn": "Manual Detection & Upload",
@@ -47,13 +45,25 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     },
   ];
 
-  // ... (دالة _completeOnboarding و dispose تبقى كما هي)
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _completeOnboarding() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('has_seen_onboarding', true);
+    
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const LoginScreen()),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    // منطق الـ build يبقى كما هو تماماً، 
-    // حيث أن PageView.builder و List.generate يستخدمان 
-    // onboardingData.length الذي أصبح الآن 4 تلقائياً.
     return Directionality(
       textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
       child: Scaffold(
@@ -61,7 +71,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         body: SafeArea(
           child: Column(
             children: [
-              // --- TOP BAR (Language Toggle) ---
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
                 child: Align(
@@ -75,8 +84,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   ),
                 ),
               ),
-
-              // --- PAGE VIEW ---
               Expanded(
                 child: PageView.builder(
                   controller: _pageController,
@@ -113,8 +120,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   },
                 ),
               ),
-
-              // --- BOTTOM NAVIGATION BAR ---
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 24.0),
                 child: Row(
@@ -167,7 +172,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
   }
 
-  // دالة _buildDot تبقى كما هي، ستتعرف على النقطة الرابعة تلقائياً
   Widget _buildDot({required int index}) {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
