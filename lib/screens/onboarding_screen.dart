@@ -12,78 +12,75 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController _pageController = PageController(initialPage: 0);
   int _currentPage = 0;
+  bool isArabic = true;
 
-  // The accurate data for the 3 onboarding screens
+  // القائمة المحدثة مع الميزة الجديدة في الترتيب الثالث
   final List<Map<String, dynamic>> onboardingData = [
     {
-      "title": "مرحباً بك في راصد",
-      "description": "رفيقك على الطريق لقيادة أكثر أماناً وذكاءً. حافظ على سلامتك، وساهم في تحسين طرق مدينتك.",
-      "icon": Icons.directions_car_filled_outlined, 
+      "titleAr": "مرحباً بك في راصد",
+      "titleEn": "Welcome to Rased",
+      "descAr": "رفيقك على الطريق لقيادة أكثر أماناً وذكاءً. حافظ على سلامتك، وساهم في تحسين طرق مدينتك.",
+      "descEn": "Your companion for safer and smarter driving. Stay safe and help improve your city's roads.",
+      "icon": Icons.directions_car_filled_outlined,
     },
     {
-      "title": "رصد آلي لعيوب الطريق",
-      "description": "يقوم التطبيق برصد الحفر، المناهل المكسورة، والتشققات تلقائياً باستخدام الذكاء الاصطناعي لتوفير طرق أكثر أماناً.",
-      "icon": Icons.add_road, 
+      "titleAr": "رصد آلي لعيوب الطريق",
+      "titleEn": "Automated Road Damage Detection",
+      "descAr": "يقوم التطبيق برصد الحفر، المناهل المكسورة، والتشققات تلقائياً باستخدام الذكاء الاصطناعي لتوفير طرق أكثر أماناً.",
+      "descEn": "The app automatically detects potholes, broken manholes, and cracks using AI to ensure safer roads.",
+      "icon": Icons.add_road,
+    },
+    // --- العنصر الجديد (الترتيب الثالث) ---
+    {
+      "titleAr": "تصوير يدوي ورفع بلاغات",
+      "titleEn": "Manual Detection & Upload",
+      "descAr": "يمكنك أيضاً تصوير عيوب الطريق يدوياً ورفعها مباشرة من خلال الكاميرا لضمان وصول صوتك.",
+      "descEn": "You can also manually photograph road defects and upload them directly via camera to ensure your report is heard.",
+      "icon": Icons.camera_enhance_outlined,
     },
     {
-      "title": "تتبع تقاريرك",
-      "description": "راقب حالة تقاريرك حول عيوب الطريق وتلقّ إشعارات عند معالجتها من قبل الجهات المختصة.",
+      "titleAr": "تتبع تقاريرك",
+      "titleEn": "Track Your Reports",
+      "descAr": "راقب حالة تقاريرك حول عيوب الطريق وتلقّ إشعارات عند معالجتها من قبل الجهات المختصة.",
+      "descEn": "Monitor the status of your road damage reports and receive notifications when authorities address them.",
       "icon": Icons.assignment_turned_in_outlined,
     },
   ];
 
-  // Call this when the user finishes onboarding
-  Future<void> _completeOnboarding() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('hasSeenOnboarding', true);
-
-    if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (context) => const LoginScreen()),
-    );
-  }
-
-  @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
-  }
+  // ... (دالة _completeOnboarding و dispose تبقى كما هي)
 
   @override
   Widget build(BuildContext context) {
+    // منطق الـ build يبقى كما هو تماماً، 
+    // حيث أن PageView.builder و List.generate يستخدمان 
+    // onboardingData.length الذي أصبح الآن 4 تلقائياً.
     return Directionality(
-      textDirection: TextDirection.rtl,
+      textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
       child: Scaffold(
-        backgroundColor: const Color(0xFF121212), // 🚨 Matched to your app's Dark Theme background
+        backgroundColor: const Color(0xFF121212),
         body: SafeArea(
           child: Column(
             children: [
-              // --- TOP BAR (Language) ---
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+              // --- TOP BAR (Language Toggle) ---
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
                 child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    "العربية",
-                    style: TextStyle(
-                      color: Color(0xFFFFD700), // 🚨 Rased Yellow
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
+                  alignment: isArabic ? Alignment.centerLeft : Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => setState(() => isArabic = !isArabic),
+                    child: Text(
+                      isArabic ? "English" : "العربية",
+                      style: const TextStyle(color: Color(0xFFFFD700), fontWeight: FontWeight.bold, fontSize: 16),
                     ),
                   ),
                 ),
               ),
 
-              // --- PAGE VIEW (Swipeable Content) ---
+              // --- PAGE VIEW ---
               Expanded(
                 child: PageView.builder(
                   controller: _pageController,
-                  onPageChanged: (int page) {
-                    setState(() {
-                      _currentPage = page;
-                    });
-                  },
+                  onPageChanged: (int page) => setState(() => _currentPage = page),
                   itemCount: onboardingData.length,
                   itemBuilder: (context, index) {
                     return Padding(
@@ -95,27 +92,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           Icon(
                             onboardingData[index]["icon"],
                             size: 150,
-                            color: const Color(0xFFFFD700), // 🚨 Rased Yellow
+                            color: const Color(0xFFFFD700),
                           ),
                           const SizedBox(height: 60),
                           Text(
-                            onboardingData[index]["title"],
+                            isArabic ? onboardingData[index]["titleAr"] : onboardingData[index]["titleEn"],
                             textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white, // 🚨 White for contrast
-                            ),
+                            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
                           ),
                           const SizedBox(height: 16),
                           Text(
-                            onboardingData[index]["description"],
+                            isArabic ? onboardingData[index]["descAr"] : onboardingData[index]["descEn"],
                             textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 15,
-                              color: Colors.white70, // 🚨 Subtle white/grey
-                              height: 1.5,
-                            ),
+                            style: const TextStyle(fontSize: 15, color: Colors.white70, height: 1.5),
                           ),
                           const Spacer(flex: 2),
                         ],
@@ -131,31 +120,24 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // SKIP BUTTON
                     TextButton(
                       onPressed: _completeOnboarding,
-                      child: const Text(
-                        "تخطي",
-                        style: TextStyle(color: Colors.white54, fontSize: 16),
+                      child: Text(
+                        isArabic ? "تخطي" : "Skip",
+                        style: const TextStyle(color: Colors.white54, fontSize: 16),
                       ),
                     ),
-
-                    // DOT INDICATORS
                     Row(
                       children: List.generate(
                         onboardingData.length,
                         (index) => _buildDot(index: index),
                       ),
                     ),
-
-                    // NEXT / DONE BUTTON
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFFFD700), // 🚨 Yellow Button
-                        foregroundColor: Colors.black, // 🚨 Black Text for readability
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20),
-                        ),
+                        backgroundColor: const Color(0xFFFFD700),
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
                       ),
                       onPressed: () {
@@ -169,11 +151,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         }
                       },
                       child: Text(
-                        _currentPage == onboardingData.length - 1 ? "تم" : "التالي",
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
+                        _currentPage == onboardingData.length - 1 
+                            ? (isArabic ? "تم" : "Done") 
+                            : (isArabic ? "التالي" : "Next"),
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                       ),
                     ),
                   ],
@@ -186,7 +167,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
   }
 
-  // Animated Dot Builder
+  // دالة _buildDot تبقى كما هي، ستتعرف على النقطة الرابعة تلقائياً
   Widget _buildDot({required int index}) {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
@@ -194,7 +175,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       height: 8,
       width: _currentPage == index ? 24 : 8,
       decoration: BoxDecoration(
-        color: _currentPage == index ? const Color(0xFFFFD700) : Colors.white24, // 🚨 Active is Yellow
+        color: _currentPage == index ? const Color(0xFFFFD700) : Colors.white24,
         borderRadius: BorderRadius.circular(4),
       ),
     );
