@@ -88,8 +88,24 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
     }
 
     try {
-      Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-      
+      // ✅ أولاً: جرّب آخر موقع محفوظ (فوري) حتى لا يرى المستخدم تأخيراً
+      final lastKnown = await Geolocator.getLastKnownPosition();
+      if (lastKnown != null && mounted) {
+        List<Placemark> lastPlacemarks = await placemarkFromCoordinates(lastKnown.latitude, lastKnown.longitude);
+        Placemark lp = lastPlacemarks[0];
+        setState(() {
+          _currentAddress = "${lp.street}, ${lp.locality}, ${lp.country}";
+          _currentLat = lastKnown.latitude;
+          _currentLng = lastKnown.longitude;
+          _isLoadingLocation = true; // لا يزال يحدّث
+        });
+      }
+
+      // ✅ ثانياً: اجلب الموقع الدقيق الحالي في الخلفية
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      ).timeout(const Duration(seconds: 20));
+
       List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
       Placemark place = placemarks[0];
 
@@ -103,10 +119,15 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _currentAddress = isArabic ? 'فشل في تحديد الموقع.' : 'Failed to get location.';
-          _isLoadingLocation = false;
-        });
+        // إذا كان عندنا موقع قديم، استخدمه ولا تُظهر خطأ
+        if (_currentLat != null) {
+          setState(() => _isLoadingLocation = false);
+        } else {
+          setState(() {
+            _currentAddress = isArabic ? 'فشل في تحديد الموقع.' : 'Failed to get location.';
+            _isLoadingLocation = false;
+          });
+        }
       }
     }
   }

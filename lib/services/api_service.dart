@@ -352,6 +352,19 @@ class ApiService {
   }
 
   // --- Report WITH Photo (Manual Form) ---
+  // ✅ Jordan geographic bounding box
+  static const double _jordanMinLat = 29.1;
+  static const double _jordanMaxLat = 33.4;
+  static const double _jordanMinLng = 34.9;
+  static const double _jordanMaxLng = 39.3;
+
+  static bool _isInsideJordan(double lat, double lng) {
+    return lat >= _jordanMinLat &&
+        lat <= _jordanMaxLat &&
+        lng >= _jordanMinLng &&
+        lng <= _jordanMaxLng;
+  }
+
   static Future<bool> submitReport({
     required XFile photo,
     required double latitude,
@@ -359,8 +372,8 @@ class ApiService {
     required int typeId,
     String? language,
   }) async {
-    lastReportError = null; // ✅ Reset error before starting
-    
+    lastReportError = null;
+
     if (_token == null) {
       lastReportError = "You must be logged in to send a report.";
       await OfflineQueue.save({
@@ -369,7 +382,22 @@ class ApiService {
       });
       return false;
     }
-    
+
+    // ✅ Block invalid or out-of-Jordan coordinates BEFORE hitting the API
+    if (latitude == 0.0 && longitude == 0.0) {
+      lastReportError = currentLanguage == 'ar'
+          ? 'لم يتم تحديد الموقع بعد. يرجى تفعيل GPS والمحاولة مجدداً.'
+          : 'Location not available yet. Please enable GPS and try again.';
+      return false;
+    }
+
+    if (!_isInsideJordan(latitude, longitude)) {
+      lastReportError = currentLanguage == 'ar'
+          ? 'موقعك خارج نطاق الأردن. تأكد من دقة GPS.'
+          : 'Your location appears to be outside Jordan. Check GPS accuracy.';
+      return false;
+    }
+
     try {
       final requestLanguage = (language ?? currentLanguage).trim().isEmpty
           ? 'en'
