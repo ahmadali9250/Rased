@@ -35,6 +35,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   DateTime? _lastReportTime;
   final int _cooldownSeconds = 2;
 
+  // ✅ GPS cache — جهّز الإحداثيات مسبقاً حتى لا تنتظر عند كل بلاغ
+  Position? _cachedPosition;
+  bool _isFetchingGps = false;
+
   final double _uiConfidenceThreshold = 0.30;
   final double _reportConfidenceThreshold = 0.50;
   final int _requiredConsecutivePotholeFrames = 1;
@@ -44,6 +48,36 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
   void initState() {
     super.initState();
     _initializeCameraAndAI();
+    _warmUpGps(); // ✅ ابدأ تحميل GPS فوراً في الخلفية
+  }
+
+  // ✅ يجلب الموقع مرة واحدة عند فتح الشاشة ويخزّنه
+  // ويعيد المحاولة كل 30 ثانية إذا فشل
+  Future<void> _warmUpGps() async {
+    if (_isFetchingGps) return;
+    _isFetchingGps = true;
+    try {
+      // أولاً: جرّب آخر موقع محفوظ (فوري — لا يستهلك بطارية)
+      final last = await Geolocator.getLastKnownPosition();
+      if (last != null && mounted) {
+        _cachedPosition = last;
+        debugPrint("📍 GPS warm-up (last known): ${last.latitude}, ${last.longitude}");
+      }
+
+      // ثانياً: اجلب الموقع الحالي بدقة عالية (قد يأخذ ثوان)
+      final fresh = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      ).timeout(const Duration(seconds: 20));
+
+      if (mounted) {
+        _cachedPosition = fresh;
+        debugPrint("✅ GPS warm-up (fresh): ${fresh.latitude}, ${fresh.longitude}");
+      }
+    } catch (e) {
+      debugPrint("⚠️ GPS warm-up failed: $e — will retry on next report");
+    } finally {
+      _isFetchingGps = false;
+    }
   }
 
   Future<void> _initializeCameraAndAI() async {
@@ -151,46 +185,39 @@ class _LiveCameraScreenState extends State<LiveCameraScreen> {
     bool streamWasPaused = false;
 
     try {
-      // Get GPS location with timeout (fail gracefully if unavailable)
+      // ✅ استخدم الموقع المحفوظ مسبقاً إن وُجد، وإلا اجلبه الآن
       Position position;
-      try {
-        position = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high
-        ).timeout(
-          const Duration(seconds: 30),
-          onTimeout: () => throw TimeoutException('GPS timeout'),
-        );
+      if (_cachedPosition != null) {
+        position = _cachedPosition!;
+        debugPrint("✅ Using cached GPS: ${position.latitude}, ${position.longitude}");
+        // جدّد الموقع في الخلفية للبلاغ القادم
+        _warmUpGps();
+      } else {
+        // لا يوجد موقع محفوظ — اجلبه الآن مع timeout قصير
+        try {
+          position = await Geolocator.getCurrentPosition(
+            desiredAccuracy: LocationAccuracy.medium, // medium أسرع من high
+          ).timeout(
+            const Duration(seconds: 15),
+            onTimeout: () => throw TimeoutException('GPS timeout'),
+          );
+          _cachedPosition = position;
+          debugPrint("✅ GPS acquired fresh: ${position.latitude}, ${position.longitude}");
+        } catch (e) {
+          String gpsError = e.toString().contains('timeout')
+              ? (isArabic ? 'انتهت مهلة GPS. تأكد من تفعيله وكونك في الهواء الطلق.' : 'GPS timed out. Make sure it\'s enabled and you\'re outdoors.')
+              : (isArabic ? 'تعذّر الحصول على الموقع: $e' : 'Could not get location: $e');
 
-        if (position.latitude == 0.0 && position.longitude == 0.0) {
-          throw Exception('Invalid GPS location: coordinates are (0,0)');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('❌ $gpsError'),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 4),
+            ));
+          }
+          throw Exception(gpsError);
         }
-
-        debugPrint("✅ GPS acquired: ${position.latitude}, ${position.longitude}");
-      } catch (e) {
-        String gpsError = 'GPS Error: ';
-        if (e.toString().contains('Location services are disabled')) {
-          gpsError += 'Location services disabled on device';
-        } else if (e.toString().contains('Permission')) {
-          gpsError += 'Location permission denied by user';
-        } else if (e.toString().contains('timeout')) {
-          gpsError += 'GPS took too long (>10s) - weak signal or indoors';
-        } else {
-          gpsError += e.toString();
-        }
-        debugPrint("⚠️ $gpsError. Using default location (0,0)");
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(isArabic 
-              ? '❌ لا يمكن إرسال البلاغ بدون موقع GPS صالح'
-              : '❌ Cannot send report without valid GPS location ($gpsError)'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            duration: const Duration(seconds: 3),
-          ));
-        }
-
-        throw Exception(gpsError);
       }
 
       if (_cameraController == null || !_cameraController!.value.isInitialized) {
