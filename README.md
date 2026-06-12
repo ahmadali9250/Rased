@@ -60,9 +60,9 @@ Follow these steps to run the Rased app on your local machine.
 
 ## Team
 
-* **Frontend Engineer:** Ahmad Ali
-* **AI / ML Engineer:** Abdallah Abughallous
-* **Backend Engineer:** Abd Alqader Alsa'di
+* **Frontend Engineer:** [Ahmad Ali](https://github.com/ahmadali9250)
+* **AI / ML Engineer:** [Abdallah Abughallous](https://github.com/AbdaullahAG)
+* **Backend Engineer:** [Abd Alqader Alsa'di](https://github.com/Abedalqaders)
 
 ---
 
