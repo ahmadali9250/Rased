@@ -1,3 +1,4 @@
+
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -5,21 +6,51 @@ from pathlib import Path
 import yaml
 
 # ==============================================================
-# CONFIG — عدّلوا هاي المسارات حسب أين حمّلتوا كل داتا سيت
+# CONFIG 
 # ==============================================================
 
-OUTPUT_DIR = Path("./merged_dataset")  # الداتا سيت النهائي الموحّد رح يتبنى هون
+OUTPUT_DIR = Path("../rased_training/merged_dataset")  
 
 SOURCES = {
+    # كل مصدر Roboflow (format="yolo") بيتعامل معه السكريبت تلقائياً بنفس الطريقة —
     "roboflow_current": {
-        "path": Path("./data_sources/roboflow_current"),  # فيها train/valid/test + data.yaml (صيغة YOLO جاهزة)
+        "path": Path("../rased_training/data_sources/roboflow_current"),  # الداتا سيت الحالي عندكم (660 صورة)
         "format": "yolo",
-        # عدّلوا هاد القاموس بعد ما تفتحوا data.yaml وتشوفوا أسماء الفئات الفعلية بالترتيب
+
         "class_map": {
             "pothole": "pothole",
+            "potholes": "pothole",
             "broken_manhole": "broken_manhole",
             "manhole": "broken_manhole",
             "crack": "crack",
+        },
+    },
+    "roboflow_smartathon": {
+        "path": Path("../rased_training/data_sources/roboflow_smartathon"),  # smartathon/new-pothole-detection (طرق سعودية)
+        "format": "yolo",
+        "class_map": {
+            "pothole": "pothole",
+            "potholes": "pothole",
+            "Pothole": "pothole",
+            "Potholes": "pothole",
+            "pothole-10": "pothole",
+            "bache": "pothole",
+            "manhole": "broken_manhole",
+        },
+    },
+    "roboflow_aegis": {
+        "path": Path("../rased_training/data_sources/roboflow_aegis"),  # aegis/pothole-detection-i00zy (1,482 صورة)
+        "format": "yolo",
+        "class_map": {
+            "pothole": "pothole",
+            "Pothole": "pothole",
+        },
+    },
+    "pothole-vhmow": {
+        "path": Path("../rased_training/data_sources/pothole-vhmow"),  
+        "format": "yolo",
+        "class_map": {
+            "pothole": "pothole",
         },
     },
     "rdd2022": {
@@ -30,13 +61,12 @@ SOURCES = {
             "D00": "crack",             # شرخ طولي
             "D10": "crack",             # شرخ عرضي
             "D20": "crack",             # شرخ تمساحي
-            # D44, D43, D50 وغيرها (إشارات مرور/خطوط) — تجاهلوها، ما إلها داعي
+
         },
     },
     "kaggle_rome": {
         "path": Path("./data_sources/road-damage-dataset-potholes-cracks-and-manholes"),
-        "format": "polygon",  # ملفات .txt فيها نقاط مضلع مطبّعة (0-1)، مو bbox مباشر
-        # تأكدوا من الأسماء الفعلية بمجلد classes.txt أو annotations metadata قبل التشغيل
+        "format": "polygon",     
         "class_map": {
             "pothole": "pothole",
             "crack": "crack",
@@ -45,7 +75,9 @@ SOURCES = {
     },
 }
 
-FINAL_CLASSES = ["pothole", "broken_manhole", "crack"]  # الترتيب هون = الترتيب اللي رح يطلع بالـ data.yaml
+# قرار: هذي الجولة حفر بس (pothole) — الثلاث مصادر المنزّلة فعلياً كلهم فئة وحدة بس أصلاً
+# (تحقّقنا من data.yaml لكل واحد). broken_manhole وcrack بيرجعوا بجولة لاحقة لما تتجمع بيانات كفاية.
+FINAL_CLASSES = ["pothole"]  # الترتيب هون = الترتيب اللي رح يطلع بالـ data.yaml
 CLASS_TO_ID = {name: i for i, name in enumerate(FINAL_CLASSES)}
 
 SPLIT_RATIOS = {"train": 0.8, "val": 0.15, "test": 0.05}
@@ -239,14 +271,31 @@ def main():
 
     all_pairs = []
 
-    print("📥 معالجة roboflow_current ...")
-    all_pairs += [("roboflow_current", p) for p in process_roboflow_source(SOURCES["roboflow_current"])]
+    # أي مصدر format="yolo" بالقاموس (roboflow_current, roboflow_smartathon, roboflow_aegis,
+    # roboflow_baka، أو أي مصدر Roboflow زيادة تضيفوه) بينعالج تلقائياً بنفس الطريقة —
+    # ما في داعي تلمسوا main() لما تضيفوا مصدر Roboflow جديد، بس زيدوه بـ SOURCES فوق.
+    for name, cfg in SOURCES.items():
+        if cfg["format"] != "yolo":
+            continue
+        if not cfg["path"].exists():
+            print(f"⏭️  تخطي {name} — المسار {cfg['path']} مش موجود")
+            continue
+        print(f"📥 معالجة {name} ...")
+        pairs = process_roboflow_source(cfg)
+        print(f"   ✅ {len(pairs)} صورة فيها كائنات مطابقة من {name}")
+        all_pairs += [(name, p) for p in pairs]
 
-    print("📥 معالجة RDD2022 ...")
-    all_pairs += [("rdd2022", p) for p in process_rdd2022_source(SOURCES["rdd2022"])]
+    if SOURCES["rdd2022"]["path"].exists():
+        print("📥 معالجة RDD2022 ...")
+        all_pairs += [("rdd2022", p) for p in process_rdd2022_source(SOURCES["rdd2022"])]
+    else:
+        print("⏭️  تخطي RDD2022 — المسار مش موجود")
 
-    print("📥 معالجة kaggle_rome ...")
-    all_pairs += [("kaggle_rome", p) for p in process_kaggle_source(SOURCES["kaggle_rome"])]
+    if SOURCES["kaggle_rome"]["path"].exists():
+        print("📥 معالجة kaggle_rome ...")
+        all_pairs += [("kaggle_rome", p) for p in process_kaggle_source(SOURCES["kaggle_rome"])]
+    else:
+        print("⏭️  تخطي kaggle_rome — المسار مش موجود")
 
     print(f"\n✅ إجمالي الصور بعد الدمج: {len(all_pairs)}")
 

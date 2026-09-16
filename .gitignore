@@ -43,3 +43,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Exclude training datasets & models
+**/data_sources/
+**/merged_dataset/
+**/runs/
+*.zip
+*.pt
+rased_training/

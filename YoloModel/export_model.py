@@ -1,19 +1,22 @@
 """
 export_model.py
 ================
-1) fine-tune | Quantization-Aware Training (QAT)
-2) LiteRT (.tflite):
-     - float16   (best_float16.tflite)  — احتياطي، دقة أعلى
-     - int8 QAT  (best_int8.tflite)     — الأسرع، هاد اللي المفروض التطبيق يستخدمه فعلياً
+1) يعمل fine-tuneQuantization-Aware Training (QAT) 
+2) يصدّر نسختين لـ LiteRT (.tflite):
+     - float16   (best_float16.tflite)  
+     - int8 QAT  (best_int8.tflite)     
 
+مهم جداً: nms=False → الموديل رح يرجّع output جاهز بشكل (1, 300, 6)
+[x1, y1, x2, y2, confidence, class_id] بدل الشكل الخام (1, nc+4, 8400).
+هاد بيلغي الحاجة للـ NMS اليدوي بـ Dart بالكامل — لازم يترافق مع تحديث tflite_service.dart.
 """
 
 from pathlib import Path
 
 from ultralytics import YOLO
 
-BEST_PT = "./rased_yolo26/v1_yolo26n/weights/best.pt"
-DATA_YAML = "./merged_dataset/data.yaml"
+BEST_PT = "../rased_training/rased_yolo26/v1_yolo26n/weights/best.pt"
+DATA_YAML = "../rased_training/merged_dataset/data.yaml"
 IMGSZ = 640
 OUTPUT_DIR = Path("./exported_models")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -49,12 +52,12 @@ def qat_finetune_and_export_int8():
         warmup_epochs=0.5,
         cos_lr=True,
         mosaic=0.0,
-        project="rased_yolo26",
+        project="../rased_training/rased_yolo26",
         name="v1_yolo26n_qat",
         exist_ok=True,
     )
 
-    qat_weights = "./rased_yolo26/v1_yolo26n_qat/weights/best.pt"
+    qat_weights = "../rased_training/rased_yolo26/v1_yolo26n_qat/weights/best.pt"
     print(f"\n📦 تصدير int8 (بعد QAT) من: {qat_weights}")
     qat_model = YOLO(qat_weights)
     path = qat_model.export(
@@ -82,3 +85,4 @@ if __name__ == "__main__":
     print("    from ultralytics import YOLO")
     print(f"    m = YOLO('{int8_path}')")
     print("    print(m.model.overrides)  # أو افحصوا بـ TFLite interpreter مباشرة")
+    

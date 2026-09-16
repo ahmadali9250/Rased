@@ -7,8 +7,8 @@ from ultralytics import YOLO
 # CONFIG
 # ==============================================================
 
-DATA_YAML = "./merged_dataset/data.yaml"  # ناتج merge_datasets.py
-PROJECT_NAME = "rased_yolo26"
+DATA_YAML = "../rased_training/merged_dataset/data.yaml"  # ناتج merge_datasets.py (شغّلناه من YoloModel)
+PROJECT_NAME = "../rased_training/rased_yolo26"  # يطلع جوا rased_training مش جوا YoloModel نفسها
 RUN_NAME = "v1_yolo26n"
 
 BASE_MODEL = "yolo26n.pt"  # أوزان مدرّبة مسبقاً — نانو
