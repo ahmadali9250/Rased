@@ -5,7 +5,16 @@ export_model.py
 
   1) FP32       (best_fp32.tflite)   — الأساس، بيشتغل FP16 تلقائياً وقت التشغيل لو GPU delegate شغال
   2) w8a32 INT8 (best_w8a32.tflite)  — تكميم ديناميكي (أوزان بس)، بدون داتا سيت معايرة، وسط بالسرعة/الدقة
-  3) INT8 ثابت  (best_int8.tflite)   — بعد QAT fine-tune، الأسرع والأصغر — هاد المفروض يكون نسخة الإنتاج النهائية
+  3) INT8 ثابت  (best_int8.tflite)   — تكميم PTQ مباشر (بمعايرة data=)، الأسرع والأصغر
+
+⚠️ تصحيح مهم: ما في QAT (quantize=8 أثناء model.train) هون — QAT بصيغة Ultralytics الحالية
+   مدعوم بس لصادرات onnx و engine (TensorRT)، ومرفوض تماماً لـ litert (AssertionError صريح
+   بكود Ultralytics نفسه). INT8 لـ litert بيصير حصراً عبر PTQ مباشر وقت التصدير (quantize=8 + data=)
+   من best.pt الأصلي مباشرة، بدون أي خطوة تدريب إضافية قبله.
+
+⚠️ ملاحظة سابقة لسا صحيحة: ما في "float16.tflite" منفصل بصيغة litert — أي FP32 export بيشتغل
+   تلقائياً بدقة FP16 وقت التشغيل عبر GPU delegate (WebGPU/OpenCL/Metal).
+   (quantize لـ litert بيقبل بس: 8, 'w8a16', 'w8a32', أو None/32 — مو 16)
 
 مهم جداً: nms=False → الموديل رح يرجّع output جاهز بشكل (1, 300, 6)
 [x1, y1, x2, y2, confidence, class_id] بدل الشكل الخام (1, nc+4, 8400).
@@ -49,32 +58,10 @@ def export_w8a32_dynamic():
     return path
 
 
-def qat_finetune_and_export_int8():
-    print("\n🎯 مرحلة QAT (Quantization-Aware Training)...")
-    model = YOLO(BEST_PT)
-
-    # fine-tune قصير جداً بـ learning rate منخفض — الهدف تكيّف الأوزان مع INT8 مش تعلّم من جديد
-    model.train(
-        data=DATA_YAML,
-        quantize=8,
-        epochs=5,
-        batch=32,
-        imgsz=IMGSZ,
-        optimizer="AdamW",
-        lr0=0.00001,
-        lrf=0.1,
-        warmup_epochs=0.5,
-        cos_lr=True,
-        mosaic=0.0,
-        project="../rased_training/rased_yolo26",
-        name="v1_yolo26n_qat",
-        exist_ok=True,
-    )
-
-    qat_weights = "../rased_training/rased_yolo26/v1_yolo26n_qat/weights/best.pt"
-    print(f"\n📦 تصدير INT8 ثابت (بعد QAT) من: {qat_weights}")
-    qat_model = YOLO(qat_weights)
-    path = qat_model.export(
+def export_int8_static():
+    print("\n📦 تصدير INT8 ثابت (PTQ مباشر بمعايرة — بدون QAT)...")
+    model = YOLO(BEST_PT)  # نفس best.pt الأصلي — بدون أي تدريب إضافي قبله
+    path = model.export(
         format="litert",
         imgsz=IMGSZ,
         quantize=8,
@@ -88,7 +75,7 @@ def qat_finetune_and_export_int8():
 if __name__ == "__main__":
     fp32_path = export_fp32()
     w8a32_path = export_w8a32_dynamic()
-    int8_path = qat_finetune_and_export_int8()
+    int8_path = export_int8_static()
 
     print("\n" + "=" * 60)
     print("✅ الملفات الثلاث جاهزة للمقارنة — انسخوا اللي بدكم تجربوه لـ assets/ بالتطبيق:")
