@@ -44,7 +44,6 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
   assets:
-    - assets/best_int8.tflite
-    - assets/best_float16.tflite
+    - assets/best_w8a32.tflite
     - assets/classes.txt
     - assets/icon.webp
