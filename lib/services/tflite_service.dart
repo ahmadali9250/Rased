@@ -6,6 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 
+/// ⚠️ لازم تتأكدوا من هاد قبل ما تشغّلوا: الموديل المصدَّر بـ export_model.py يستخدم
+/// nms=False، يعني output tensor شكله (1, 300, 6) => [x1, y1, x2, y2, conf, class_id]
+/// بإحداثيات مطبّعة (0-1). لو صدّرتوا بإعدادات مختلفة لازم تعدّلوا _parseDetections.
 class TFLiteService {
   Interpreter? _interpreter;
   List<String>? _labels;
@@ -17,7 +20,7 @@ class TFLiteService {
   int _inputZeroPoint = 0;
 
   static const double _confThreshold = 0.35; // كان 0.20 بالكود القديم — رفعناه لتقليل false positives
-  static const String _modelAsset = 'assets/best_int8.tflite'; // غيّروها لو استخدمتوا float16
+  static const String _modelAsset = 'assets/best_w8a32.tflite'; // النسخة النهائية المعتمدة — أدق نسخة تقريباً بنفس دقة FP32 وبثلث حجمه
 
   Future<void> initializeModel() async {
     _interpreter = await _loadInterpreterWithBestDelegate();
@@ -314,8 +317,10 @@ class TFLiteService {
     return _runInterpreterWithBuffer(interpreter, buffer, inputType, labels);
   }
 
-  /// يشغّل الاستنتاج ويقرأ output الجاهز (1, 300, 6): [x1, y1, x2, y2, conf, class_id]
-  /// هاد الشكل بيطلع مباشرة من الموديل (nms=False بالتصدير) — بدون أي فك تشفير أو NMS يدوي.
+  /// يشغّل الاستنتاج ويقرر تلقائياً شكل الـ output ويتعامل معه:
+  /// - end2end: (1, 300, 6) [x1,y1,x2,y2,conf,class_id] — يطلع من FP32/w8a32 (nms=False اشتغل)
+  /// - raw:     (1, nc+4, N) — يطلع من INT8 تحديداً (Ultralytics بيعطّل end2end تلقائياً مع
+  ///   تكميم INT8 الثابت، بغض النظر شو مررنا بـ nms=)، فمحتاج فك تشفير + NMS يدوي هون.
   static Map<String, dynamic> _runInterpreterWithBuffer(
     Interpreter interpreter,
     TypedData inputBuffer,
@@ -323,9 +328,25 @@ class TFLiteService {
     List<String> labels,
   ) {
     final outputTensor = interpreter.getOutputTensor(0);
-    final outputShape = outputTensor.shape; // متوقع [1, 300, 6]
-    final maxDet = outputShape[1];
+    final outputShape = outputTensor.shape; // [1, 300, 6] أو [1, nc+4, N]
 
+    final bool isEndToEnd = outputShape.length == 3 && outputShape[2] == 6;
+
+    if (isEndToEnd) {
+      return _parseEndToEndOutput(interpreter, inputBuffer, outputShape, labels);
+    } else {
+      return _parseRawOutputWithNMS(interpreter, inputBuffer, outputShape, labels);
+    }
+  }
+
+  /// شكل جاهز (1, 300, 6): [x1, y1, x2, y2, conf, class_id] — بدون أي فك تشفير أو NMS يدوي.
+  static Map<String, dynamic> _parseEndToEndOutput(
+    Interpreter interpreter,
+    TypedData inputBuffer,
+    List<int> outputShape,
+    List<String> labels,
+  ) {
+    final maxDet = outputShape[1];
     final outputBuffer =
         List.generate(1, (_) => List.generate(maxDet, (_) => List.filled(6, 0.0)));
 
@@ -339,7 +360,7 @@ class TFLiteService {
 
     for (final row in parsed) {
       final double conf = row[4];
-      if (conf < _confThreshold) continue; // الصفوف مرتبة تنازلياً غالباً، بس منفحص الكل لأمان
+      if (conf < _confThreshold) continue;
 
       final int classId = row[5].round();
       final String label =
@@ -361,5 +382,114 @@ class TFLiteService {
     }
 
     return {'label': bestLabel, 'detections': detections};
+  }
+
+  /// شكل خام (1, nc+4, N): كل عمود = صندوق مرشّح [cx, cy, w, h, score_class0, score_class1, ...]
+  /// (إحداثيات cx/cy/w/h مطبّعة 0-1). لازم فك تشفير + NMS يدوي هون لأنه ما في NMS جوا الموديل.
+  static Map<String, dynamic> _parseRawOutputWithNMS(
+    Interpreter interpreter,
+    TypedData inputBuffer,
+    List<int> outputShape,
+    List<String> labels,
+  ) {
+    final int numChannels = outputShape[1]; // nc + 4
+    final int numAnchors = outputShape[2];
+    final int numClasses = numChannels - 4;
+
+    final outputBuffer = List.generate(
+      1,
+      (_) => List.generate(numChannels, (_) => List.filled(numAnchors, 0.0)),
+    );
+
+    interpreter.run([inputBuffer], outputBuffer);
+    final raw = outputBuffer[0] as List<List<double>>;
+
+    // كل مرشّح: [cx, cy, w, h, conf, classId, x1, y1, x2, y2] — منجمعهم هون قبل NMS
+    final candidates = <List<double>>[];
+
+    for (int a = 0; a < numAnchors; a++) {
+      double bestScore = 0.0;
+      int bestClass = 0;
+      for (int c = 0; c < numClasses; c++) {
+        final double score = raw[4 + c][a];
+        if (score > bestScore) {
+          bestScore = score;
+          bestClass = c;
+        }
+      }
+      if (bestScore < _confThreshold) continue;
+
+      final double cx = raw[0][a];
+      final double cy = raw[1][a];
+      final double w = raw[2][a];
+      final double h = raw[3][a];
+
+      final double x1 = (cx - w / 2).clamp(0.0, 1.0);
+      final double y1 = (cy - h / 2).clamp(0.0, 1.0);
+      final double x2 = (cx + w / 2).clamp(0.0, 1.0);
+      final double y2 = (cy + h / 2).clamp(0.0, 1.0);
+
+      candidates.add([x1, y1, x2, y2, bestScore, bestClass.toDouble()]);
+    }
+
+    // NMS: نرتب تنازلياً حسب الثقة، ونقصي أي صندوق متداخل بشدة (IoU عالي) مع صندوق أقوى منه
+    candidates.sort((a, b) => b[4].compareTo(a[4]));
+    const double iouThreshold = 0.45;
+    final kept = <List<double>>[];
+
+    for (final cand in candidates) {
+      bool suppressed = false;
+      for (final k in kept) {
+        if (_iou(cand, k) > iouThreshold) {
+          suppressed = true;
+          break;
+        }
+      }
+      if (!suppressed) kept.add(cand);
+      if (kept.length >= 300) break; // نفس الحد الأقصى المستخدم بالنماذج end2end
+    }
+
+    final detections = <Map<String, dynamic>>[];
+    String bestLabel = 'Clear Road';
+    double maxScore = 0.0;
+
+    for (final box in kept) {
+      final int classId = box[5].round();
+      final String label =
+          (classId >= 0 && classId < labels.length) ? labels[classId] : 'Class $classId';
+
+      detections.add({
+        'x1': box[0],
+        'y1': box[1],
+        'x2': box[2],
+        'y2': box[3],
+        'conf': box[4],
+        'label': label,
+      });
+
+      if (box[4] > maxScore) {
+        maxScore = box[4];
+        bestLabel = label;
+      }
+    }
+
+    return {'label': bestLabel, 'detections': detections};
+  }
+
+  static double _iou(List<double> a, List<double> b) {
+    final double x1 = a[0] > b[0] ? a[0] : b[0];
+    final double y1 = a[1] > b[1] ? a[1] : b[1];
+    final double x2 = a[2] < b[2] ? a[2] : b[2];
+    final double y2 = a[3] < b[3] ? a[3] : b[3];
+
+    final double interW = (x2 - x1).clamp(0.0, double.infinity);
+    final double interH = (y2 - y1).clamp(0.0, double.infinity);
+    final double interArea = interW * interH;
+
+    final double areaA = (a[2] - a[0]) * (a[3] - a[1]);
+    final double areaB = (b[2] - b[0]) * (b[3] - b[1]);
+    final double unionArea = areaA + areaB - interArea;
+
+    return unionArea <= 0 ? 0.0 : interArea / unionArea;
   }
 }
