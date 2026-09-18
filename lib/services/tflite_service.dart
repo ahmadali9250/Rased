@@ -52,6 +52,7 @@ const int _kGpuPriorityMinMemoryUsage = 3;
 class TFLiteService {
   // --- الموديل ---
   Interpreter? _interpreter;
+  Uint8List? _modelBuffer;
   List<String>? _labels;
 
   int _inputWidth = 0;
@@ -114,6 +115,11 @@ class TFLiteService {
     _inputScale = inputTensor.params.scale;
     _inputZeroPoint = inputTensor.params.zeroPoint;
     final outputTensor = _interpreter!.getOutputTensor(0);
+    final modelAssetData = await rootBundle.load(_modelAsset);
+    _modelBuffer = modelAssetData.buffer.asUint8List(
+      modelAssetData.offsetInBytes,
+      modelAssetData.lengthInBytes,
+    );
 
     debugPrint(
       '✅ الموديل جاهز | input: ${_inputWidth}x$_inputHeight '
@@ -177,7 +183,7 @@ class TFLiteService {
     }
   }
 
-  /// يُنشئ الـ isolate الدائم ويسلّمه عنوان الـ interpreter + أبعاد الإدخال.
+  /// يُنشئ الـ isolate الدائم ويسلّمه bytes النموذج + أبعاد الإدخال.
   Future<void> _startWorkerIsolate() async {
     _fromWorker = ReceivePort();
 
@@ -185,7 +191,7 @@ class TFLiteService {
       _workerEntry,
       _WorkerInit(
         mainPort: _fromWorker!.sendPort,
-        interpreterAddress: _interpreter!.address,
+        modelBuffer: _modelBuffer!,
         inputWidth: _inputWidth,
         inputHeight: _inputHeight,
         inputTypeIndex: _inputType.index,
@@ -231,6 +237,7 @@ class TFLiteService {
     _pending = null;
     _interpreter?.close();
     _interpreter = null;
+    _modelBuffer = null;
   }
 
   // ==========================================================================
@@ -390,7 +397,15 @@ class TFLiteService {
     final rp = ReceivePort();
     init.mainPort.send(rp.sendPort);
 
-    final interpreter = Interpreter.fromAddress(init.interpreterAddress);
+    // لا نمرّر عنوان interpreter الأصلي إلى isolate آخر. الـ GPU/NNAPI
+    // delegate مربوط بسياق الـisolate الذي أُنشئ فيه، وهذا هو سبب
+    // "Bad state: failed precondition" على بعض الهواتف. ننشئ interpreter
+    // مستقلاً من bytes النموذج داخل worker؛ بذلك يشتغل CPU/XNNPACK بثبات.
+    final workerOptions = InterpreterOptions()..threads = 4;
+    final interpreter = Interpreter.fromBuffer(
+      init.modelBuffer,
+      options: workerOptions,
+    );
     final inputType = TensorType.values[init.inputTypeIndex];
     final w = init.inputWidth;
     final h = init.inputHeight;
@@ -785,7 +800,7 @@ class _OutputCache {
 class _WorkerInit {
   const _WorkerInit({
     required this.mainPort,
-    required this.interpreterAddress,
+    required this.modelBuffer,
     required this.inputWidth,
     required this.inputHeight,
     required this.inputTypeIndex,
@@ -797,7 +812,7 @@ class _WorkerInit {
   });
 
   final SendPort mainPort;
-  final int interpreterAddress;
+  final Uint8List modelBuffer;
   final int inputWidth;
   final int inputHeight;
   final int inputTypeIndex;
