@@ -9,7 +9,7 @@ import '../services/api_service.dart';
 
 /// The Manual Hazard Reporting Screen.
 ///
-/// Allows users to manually capture or upload a photo of a road hazard, 
+/// Allows users to manually capture or upload a photo of a road hazard,
 /// automatically tags it with GPS coordinates, and submits it to the backend.
 /// Acts as a crucial fallback for the Live AI Camera.
 class ReportDamageScreen extends StatefulWidget {
@@ -34,12 +34,16 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
   File? _selectedImage;
   final ImagePicker _picker = ImagePicker();
   final TFLiteService _tfliteService = TFLiteService(); // Local AI verification
-  
+
   String _currentAddress = "Locating your position...";
   double? _currentLat;
   double? _currentLng;
   bool _isLoadingLocation = true;
   bool _isSubmitting = false;
+  bool _isAnalyzing = false;
+
+  /// آخر نسبة ثقة من الموديل — نعرضها للمستخدم كمؤشر مساعد.
+  double? _aiConfidence;
 
   @override
   void initState() {
@@ -52,14 +56,16 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
   @override
   void dispose() {
     _descriptionController.dispose();
+    // 🔑 مهم: تحرير الـ interpreter والـ isolate، وإلا بيضلوا بالذاكرة
+    _tfliteService.dispose();
     super.dispose();
   }
 
   // ==========================================
   // HARDWARE INTEGRATION: GPS
   // ==========================================
-  
-  /// Fetches the user's high-accuracy GPS coordinates and translates them 
+
+  /// Fetches the user's high-accuracy GPS coordinates and translates them
   /// into a human-readable street address for the UI.
   Future<void> _getCurrentLocation() async {
     final isArabic = ApiService.currentLanguage == 'ar';
@@ -68,8 +74,10 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
 
     serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
+      if (!mounted) return;
       setState(() {
-        _currentAddress = isArabic ? 'نظام تحديد المواقع مغلق.' : 'GPS is turned off.';
+        _currentAddress =
+            isArabic ? 'نظام تحديد المواقع مغلق.' : 'GPS is turned off.';
         _isLoadingLocation = false;
       });
       return;
@@ -79,8 +87,11 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
+        if (!mounted) return;
         setState(() {
-          _currentAddress = isArabic ? 'تم رفض إذن الوصول للموقع.' : 'Location permission denied.';
+          _currentAddress = isArabic
+              ? 'تم رفض إذن الوصول للموقع.'
+              : 'Location permission denied.';
           _isLoadingLocation = false;
         });
         return;
@@ -91,8 +102,10 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
       // ✅ أولاً: جرّب آخر موقع محفوظ (فوري) حتى لا يرى المستخدم تأخيراً
       final lastKnown = await Geolocator.getLastKnownPosition();
       if (lastKnown != null && mounted) {
-        List<Placemark> lastPlacemarks = await placemarkFromCoordinates(lastKnown.latitude, lastKnown.longitude);
+        List<Placemark> lastPlacemarks = await placemarkFromCoordinates(
+            lastKnown.latitude, lastKnown.longitude);
         Placemark lp = lastPlacemarks[0];
+        if (!mounted) return;
         setState(() {
           _currentAddress = "${lp.street}, ${lp.locality}, ${lp.country}";
           _currentLat = lastKnown.latitude;
@@ -106,7 +119,8 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
         desiredAccuracy: LocationAccuracy.high,
       ).timeout(const Duration(seconds: 20));
 
-      List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
+      List<Placemark> placemarks = await placemarkFromCoordinates(
+          position.latitude, position.longitude);
       Placemark place = placemarks[0];
 
       if (mounted) {
@@ -124,7 +138,8 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
           setState(() => _isLoadingLocation = false);
         } else {
           setState(() {
-            _currentAddress = isArabic ? 'فشل في تحديد الموقع.' : 'Failed to get location.';
+            _currentAddress =
+                isArabic ? 'فشل في تحديد الموقع.' : 'Failed to get location.';
             _isLoadingLocation = false;
           });
         }
@@ -135,8 +150,8 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
   // ==========================================
   // HARDWARE INTEGRATION: CAMERA & GALLERY
   // ==========================================
-  
-  /// Opens the device camera or gallery, captures an image, and runs it 
+
+  /// Opens the device camera or gallery, captures an image, and runs it
   /// through the local TFLite model for a preliminary AI check.
   Future<void> _pickImage(ImageSource source) async {
     final XFile? pickedFile = await _picker.pickImage(
@@ -145,23 +160,74 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
       maxWidth: 800,
     );
 
-    if (pickedFile != null) {
-      setState(() {
-        _selectedImage = File(pickedFile.path);
-      });
-      debugPrint("📸 Image selected: ${pickedFile.path}");
+    if (pickedFile == null) return;
 
-      // Run a quick local AI check to assist the user
-      debugPrint("🤖 AI is analyzing the image...");
-      String detectedDamage = await _tfliteService.predictImage(pickedFile.path);
-      debugPrint("✅ AI finished! It looks like a: $detectedDamage");
-      
-      // Auto-select the dropdown based on AI prediction (if it matches our list)
-      if (_damageTypes.contains(detectedDamage)) {
-        setState(() {
-          _selectedDamageType = detectedDamage;
-        });
+    setState(() {
+      _selectedImage = File(pickedFile.path);
+      _isAnalyzing = true;
+      _aiConfidence = null;
+    });
+    debugPrint("📸 Image selected: ${pickedFile.path}");
+
+    // Run a quick local AI check to assist the user
+    debugPrint("🤖 AI is analyzing the image...");
+
+    // ⚠️ predictImage صار يرجّع Map (مش String) بعد تحديث tflite_service:
+    //    {'label': String, 'detections': List<Map>}
+    final result = await _tfliteService.predictImage(pickedFile.path);
+    if (!mounted) return;
+
+    final String detectedLabel = result['label'] as String? ?? 'Clear Road';
+    final detections =
+        (result['detections'] as List?)?.cast<Map<String, dynamic>>() ??
+            const <Map<String, dynamic>>[];
+
+    final double? topConf = detections.isEmpty
+        ? null
+        : (detections.first['conf'] as num?)?.toDouble();
+
+    debugPrint(
+      "✅ AI finished! label=$detectedLabel | detections=${detections.length}",
+    );
+
+    // 🔑 مطابقة غير حساسة لحالة الأحرف:
+    // الموديل الحالي single-class ويرجّع "pothole" بحروف صغيرة،
+    // بينما القائمة فيها "Pothole" بحرف كبير — بدون هاد التطبيع
+    // الاختيار التلقائي ما كان بيشتغل أبداً.
+    final String? matched = _matchDamageType(detectedLabel);
+
+    setState(() {
+      _isAnalyzing = false;
+      _aiConfidence = topConf;
+      if (matched != null) {
+        _selectedDamageType = matched;
       }
+    });
+  }
+
+  /// يرجّع نوع الضرر المطابق من القائمة، أو null لو ما في تطابق.
+  String? _matchDamageType(String rawLabel) {
+    final normalized = rawLabel.trim().toLowerCase();
+    if (normalized.isEmpty || normalized == 'clear road') return null;
+
+    for (final type in _damageTypes) {
+      if (type.toLowerCase() == normalized) return type;
+    }
+
+    // مرادفات محتملة من أسماء الفئات بالموديل (classes.txt)
+    switch (normalized) {
+      case 'pothole':
+      case 'potholes':
+        return 'Pothole';
+      case 'crack':
+      case 'cracks':
+      case 'alligator_crack':
+        return 'Crack';
+      case 'broken_manhole':
+      case 'manhole':
+        return 'Broken Manhole';
+      default:
+        return null;
     }
   }
 
@@ -183,7 +249,8 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
           iconTheme: const IconThemeData(color: Colors.white),
           title: Text(
             isArabic ? 'تأكيد البلاغ' : 'Confirm Report',
-            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
+            style: const TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
           ),
           centerTitle: true,
         ),
@@ -205,28 +272,76 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                     color: Colors.white.withValues(alpha: 0.05),
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                      color: _selectedImage == null ? Colors.white38 : const Color(0xFFFFD700),
+                      color: _selectedImage == null
+                          ? Colors.white38
+                          : const Color(0xFFFFD700),
                       width: 2,
                     ),
                   ),
                   child: _selectedImage != null
-                      ? ClipRRect(
-                          borderRadius: BorderRadius.circular(14),
-                          child: Image.file(_selectedImage!, fit: BoxFit.cover),
+                      ? Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(14),
+                              child: Image.file(_selectedImage!,
+                                  fit: BoxFit.cover),
+                            ),
+                            if (_isAnalyzing)
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(14),
+                                child: Container(
+                                  color: Colors.black54,
+                                  child: const Center(
+                                    child: CircularProgressIndicator(
+                                      color: Color(0xFFFFD700),
+                                      strokeWidth: 3,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
                         )
                       : Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.add_a_photo, color: Colors.white54, size: 50),
+                            const Icon(Icons.add_a_photo,
+                                color: Colors.white54, size: 50),
                             const SizedBox(height: 12),
                             Text(
-                              isArabic ? 'اضغط لإضافة صورة للضرر' : 'Tap to add photo of the damage',
-                              style: const TextStyle(color: Colors.white54, fontSize: 16),
+                              isArabic
+                                  ? 'اضغط لإضافة صورة للضرر'
+                                  : 'Tap to add photo of the damage',
+                              style: const TextStyle(
+                                  color: Colors.white54, fontSize: 16),
                             ),
                           ],
                         ),
                 ),
               ),
+
+              // --- مؤشر نتيجة الذكاء الاصطناعي ---
+              if (_aiConfidence != null) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Icon(Icons.auto_awesome,
+                        color: Color(0xFFFFD700), size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        isArabic
+                            ? 'الذكاء الاصطناعي رجّح: ${_translateDamageType(_selectedDamageType, true)} '
+                                '(${(_aiConfidence! * 100).toStringAsFixed(0)}%)'
+                            : 'AI suggests: $_selectedDamageType '
+                                '(${(_aiConfidence! * 100).toStringAsFixed(0)}%)',
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
 
               const SizedBox(height: 30),
 
@@ -246,8 +361,10 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                     ),
                     if (_isLoadingLocation)
                       const SizedBox(
-                        width: 16, height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFFFD700)),
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Color(0xFFFFD700)),
                       )
                   ],
                 ),
@@ -275,7 +392,8 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                     value: _selectedDamageType,
                     isExpanded: true,
                     dropdownColor: const Color(0xFF1E1E1E),
-                    icon: const Icon(Icons.arrow_drop_down, color: Color(0xFFFFD700)),
+                    icon: const Icon(Icons.arrow_drop_down,
+                        color: Color(0xFFFFD700)),
                     style: const TextStyle(color: Colors.white, fontSize: 16),
                     items: _damageTypes.map((String type) {
                       return DropdownMenuItem<String>(
@@ -303,17 +421,24 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFFFD700),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
                   ),
-                  onPressed: _isSubmitting ? null : () => _submitReportToBackend(isArabic),
-                  child: _isSubmitting 
+                  onPressed: _isSubmitting
+                      ? null
+                      : () => _submitReportToBackend(isArabic),
+                  child: _isSubmitting
                       ? const SizedBox(
-                          height: 24, width: 24, 
-                          child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3)
-                        )
+                          height: 24,
+                          width: 24,
+                          child: CircularProgressIndicator(
+                              color: Colors.black, strokeWidth: 3))
                       : Text(
                           isArabic ? 'إرسال البلاغ' : 'Submit Report',
-                          style: const TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: Colors.black,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold),
                         ),
                 ),
               ),
@@ -343,15 +468,18 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
             children: [
               ListTile(
                 leading: const Icon(Icons.camera_alt, color: Color(0xFFFFD700)),
-                title: Text(isArabic ? 'التقاط صورة' : 'Take a Photo', style: const TextStyle(color: Colors.white)),
+                title: Text(isArabic ? 'التقاط صورة' : 'Take a Photo',
+                    style: const TextStyle(color: Colors.white)),
                 onTap: () {
                   Navigator.of(context).pop();
                   _pickImage(ImageSource.camera);
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.photo_library, color: Color(0xFFFFD700)),
-                title: Text(isArabic ? 'اختيار من المعرض' : 'Choose from Gallery', style: const TextStyle(color: Colors.white)),
+                leading:
+                    const Icon(Icons.photo_library, color: Color(0xFFFFD700)),
+                title: Text(isArabic ? 'اختيار من المعرض' : 'Choose from Gallery',
+                    style: const TextStyle(color: Colors.white)),
                 onTap: () {
                   Navigator.of(context).pop();
                   _pickImage(ImageSource.gallery);
@@ -369,7 +497,9 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
     if (_selectedImage == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(isArabic ? 'الرجاء إضافة صورة للضرر أولاً!' : 'Please add a photo of the damage first!'),
+          content: Text(isArabic
+              ? 'الرجاء إضافة صورة للضرر أولاً!'
+              : 'Please add a photo of the damage first!'),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -380,7 +510,9 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
     if (_currentLat == null || _currentLng == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(isArabic ? 'جاري تحديد موقعك، يرجى الانتظار...' : 'Still getting your location, please wait a second!'),
+          content: Text(isArabic
+              ? 'جاري تحديد موقعك، يرجى الانتظار...'
+              : 'Still getting your location, please wait a second!'),
           backgroundColor: Colors.orange,
           behavior: SnackBarBehavior.floating,
         ),
@@ -393,9 +525,9 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
 
     try {
       debugPrint("🚀 Sending report for $_selectedDamageType at $_currentAddress");
-      
+
       bool success = await ApiService.submitReport(
-        photo: XFile(_selectedImage!.path), 
+        photo: XFile(_selectedImage!.path),
         latitude: _currentLat!,
         longitude: _currentLng!,
         typeId: _getDamageTypeId(_selectedDamageType),
@@ -407,17 +539,22 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
       if (success) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(isArabic ? '✅ تم إرسال البلاغ بنجاح!' : '✅ Report submitted successfully!'),
+            content: Text(isArabic
+                ? '✅ تم إرسال البلاغ بنجاح!'
+                : '✅ Report submitted successfully!'),
             backgroundColor: Colors.green,
             behavior: SnackBarBehavior.floating,
           ),
         );
         Navigator.pop(context); // Close screen, return to map
       } else {
-        // 🚨 Displays Abdallah's EXACT error message from the database!
+        // 🚨 Displays the EXACT error message from the database
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(ApiService.lastReportError ?? (isArabic ? '❌ فشل الإرسال إلى الخادم.' : '❌ Failed to upload to the server.')),
+            content: Text(ApiService.lastReportError ??
+                (isArabic
+                    ? '❌ فشل الإرسال إلى الخادم.'
+                    : '❌ Failed to upload to the server.')),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -442,7 +579,8 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
   Widget _buildSectionTitle(String title) {
     return Text(
       title,
-      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+      style: const TextStyle(
+          color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
     );
   }
 
@@ -468,20 +606,28 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
   String _translateDamageType(String type, bool isArabic) {
     if (!isArabic) return type;
     switch (type) {
-      case 'Pothole': return 'حفرة';
-      case 'Crack': return 'تشقق';
-      case 'Broken Manhole': return 'منهل';
-      default: return 'حفرة';
+      case 'Pothole':
+        return 'حفرة';
+      case 'Crack':
+        return 'تشقق';
+      case 'Broken Manhole':
+        return 'منهل';
+      default:
+        return 'حفرة';
     }
   }
 
   // 🚨 FIXED: Removed unused mappings. Now strictly maps to 1, 2, and 4.
   int _getDamageTypeId(String type) {
     switch (type) {
-      case 'Pothole': return 1;
-      case 'Crack': return 2;
-      case 'Broken Manhole': return 4;
-      default: return 1;
+      case 'Pothole':
+        return 1;
+      case 'Crack':
+        return 2;
+      case 'Broken Manhole':
+        return 4;
+      default:
+        return 1;
     }
   }
 }

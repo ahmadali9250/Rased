@@ -1,15 +1,56 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
-import 'package:camera/camera.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart';
-import 'package:image/image.dart' as img;
 
-/// ⚠️ لازم تتأكدوا من هاد قبل ما تشغّلوا: الموديل المصدَّر بـ export_model.py يستخدم
-/// nms=False، يعني output tensor شكله (1, 300, 6) => [x1, y1, x2, y2, conf, class_id]
-/// بإحداثيات مطبّعة (0-1). لو صدّرتوا بإعدادات مختلفة لازم تعدّلوا _parseDetections.
+import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
+import 'package:tflite_flutter/tflite_flutter.dart';
+
+/// ============================================================================
+/// ثوابت GPU delegate — قيم رقمية من TensorFlow Lite C API الرسمي.
+///
+/// ملاحظة مهمة: مكتبة tflite_flutter تعرّف هاي القيم داخلياً بملف
+/// `src/bindings/tensorflow_lite_bindings_generated.dart` وهو **غير مُصدَّر**
+/// من المكتبة العامة. استيراده مباشرة يعطي تحذير `implementation_imports`
+/// وممكن ينكسر بأي تحديث للمكتبة.
+///
+/// الحل: نمرر الأرقام مباشرة — الـ factory أصلاً بيستقبل `int` وليس enum،
+/// وهاي الأرقام جزء من الـ C API نفسه (delegates/gpu/delegate_options.h)
+/// فما بتتغير بين إصدارات الـ Dart binding.
+/// ============================================================================
+
+// TfLiteGpuInferenceUsage
+const int _kGpuUsageFastSingleAnswer = 0; // فريم واحد بكل استدعاء (حالتنا بالضبط)
+// ignore: unused_element
+const int _kGpuUsageSustainedSpeed = 1; // throughput مستمر (batch) — مش حالتنا
+
+// TfLiteGpuInferencePriority
+const int _kGpuPriorityAuto = 0;
+// ignore: unused_element
+const int _kGpuPriorityMaxPrecision = 1;
+const int _kGpuPriorityMinLatency = 2; // ⚡ هدفنا الأول: أقل زمن استجابة
+// ignore: unused_element
+const int _kGpuPriorityMinMemoryUsage = 3;
+
+/// خدمة الاستنتاج المحلي (YOLO26n / best_w8a32.tflite).
+///
+/// تحسينات الأداء المطبّقة:
+///  1. GPU delegate بأولوية MIN_LATENCY (بدل MAX_PRECISION الافتراضي).
+///  2. **Isolate دائم** — يُنشأ مرة واحدة فقط بدل `compute()` اللي بيولّد
+///     isolate جديد كل فريم (تكلفة إنشاء/إنهاء الـ isolate كانت أغلى من
+///     الاستنتاج نفسه أحياناً).
+///  3. **Back-pressure**: أي فريم يوصل والـ worker مشغول بينرمي فوراً،
+///     فما بيتراكم طابور فريمات ويصير التطبيق "متأخر عن الواقع".
+///  4. **Frame skipping**: تحليل فريم من كل N (افتراضياً 1 من 3).
+///  5. **إعادة استخدام كل الـ buffers** (input + output) بدل تخصيص جديد كل فريم.
+///  6. **جداول بحث مسبقة** لإحداثيات العيّنة (sx/sy) — بتلغي قسمة integer
+///     لكل بكسل داخل اللوب المتداخل.
+///  7. تحويل YUV→RGB + تصغير بمرور واحد على أبعاد الموديل مباشرة.
 class TFLiteService {
+  // --- الموديل ---
   Interpreter? _interpreter;
   List<String>? _labels;
 
@@ -19,18 +60,48 @@ class TFLiteService {
   double _inputScale = 1.0;
   int _inputZeroPoint = 0;
 
-  static const double _confThreshold = 0.35; // كان 0.20 بالكود القديم — رفعناه لتقليل false positives
-  static const String _modelAsset = 'assets/best_w8a32.tflite'; // النسخة النهائية المعتمدة — أدق نسخة تقريباً بنفس دقة FP32 وبثلث حجمه
+  // --- الـ isolate الدائم ---
+  Isolate? _isolate;
+  SendPort? _workerPort;
+  ReceivePort? _fromWorker;
+  Completer<Map<String, dynamic>>? _pending;
+  bool _workerReady = false;
+
+  // --- تنظيم معدل الفريمات ---
+  int _frameCounter = 0;
+
+  /// حلّل فريم واحد من كل (N).
+  ///
+  /// ⚠️ خليها = 1 إذا الشاشة أصلاً بتنظّم المعدل بالوقت (مثل LiveCameraScreen
+  /// اللي بتستخدم `_fpsIntervalMs`)، وإلا التنظيمين بيتراكمو وبيصير المعدل
+  /// الفعلي أبطأ بكثير من المقصود (مثلاً 8 FPS ÷ 3 = ~2.7 تحليل/ثانية).
+  static const int frameSkipRate = 1;
+
+  static const double _confThreshold = 0.35;
+  static const double _iouThreshold = 0.45;
+  static const String _modelAsset = 'assets/best_w8a32.tflite';
+
+  bool get isReady => _interpreter != null && _workerReady;
+
+  // ==========================================================================
+  // التهيئة
+  // ==========================================================================
 
   Future<void> initializeModel() async {
+    if (_interpreter != null) return; // تهيئة مرة وحدة بس
+
     _interpreter = await _loadInterpreterWithBestDelegate();
     if (_interpreter == null) {
-      debugPrint('❌ فشل تحميل الموديل نهائياً (GPU وCPU الاثنين فشلوا)');
+      debugPrint('❌ فشل تحميل الموديل نهائياً (GPU وNNAPI وCPU كلهم فشلوا)');
       return;
     }
 
     final labelFile = await rootBundle.loadString('assets/classes.txt');
-    _labels = labelFile.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+    _labels = labelFile
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
 
     final inputTensor = _interpreter!.getInputTensor(0);
     final inputShape = inputTensor.shape;
@@ -41,45 +112,57 @@ class TFLiteService {
     _inputZeroPoint = inputTensor.params.zeroPoint;
 
     debugPrint(
-      '✅ الموديل جاهز | input: ${_inputWidth}x$_inputHeight | type: $_inputType | labels: $_labels',
+      '✅ الموديل جاهز | input: ${_inputWidth}x$_inputHeight '
+      '| type: $_inputType | labels: $_labels',
     );
+
+    await _startWorkerIsolate();
   }
 
-  /// يجرّب GPU delegate أول شي، ولو فشل (جهاز قديم / درايفر ما بيدعم) يرجع لـ NNAPI،
-  /// ولو هاد كمان فشل، يرجع CPU عادي (XNNPACK الافتراضي) بدل ما يطيح التطبيق كامل.
+  /// ترتيب المحاولات: GPU (min latency) → NNAPI → CPU متعدد الخيوط.
   Future<Interpreter?> _loadInterpreterWithBestDelegate() async {
-    // 1) GPU (الأسرع بكثير حسب البنشمارك — GPU ~4.7ms مقابل CPU ~29ms لموديل مشابه)
+    // 1) GPU delegate — الأسرع بفارق كبير (بنشمارك: ~4.7ms مقابل ~29ms على CPU)
     try {
       final gpuDelegate = GpuDelegateV2(
         options: GpuDelegateOptionsV2(
+          // يسمح للـ GPU يشتغل FP16 / يكمّم داخلياً. الموديل أصلاً w8a32
+          // فالفقدان بالدقة مهمل عملياً، والمكسب بالسرعة كبير.
           isPrecisionLossAllowed: true,
-          inferencePreference: TfLiteGpuInferenceUsage.fastSingleAnswer,
-          inferencePriority1: TfLiteGpuInferencePriority.minLatency,
-          inferencePriority2: TfLiteGpuInferencePriority.auto,
-          inferencePriority3: TfLiteGpuInferencePriority.auto,
+          inferencePreference: _kGpuUsageFastSingleAnswer,
+          // ⚡ الافتراضي هو MAX_PRECISION — نحن بدنا العكس تماماً.
+          inferencePriority1: _kGpuPriorityMinLatency,
+          inferencePriority2: _kGpuPriorityAuto,
+          inferencePriority3: _kGpuPriorityAuto,
+          // ENABLE_QUANT مفعّل افتراضياً وهو ضروري لموديل w8a32 (تنسورات مكمّمة).
+          maxDelegatePartitions: 1,
         ),
       );
       final options = InterpreterOptions()..addDelegate(gpuDelegate);
-      final interpreter = await Interpreter.fromAsset(_modelAsset, options: options);
-      debugPrint('✅ GPU delegate اشتغل');
+      final interpreter =
+          await Interpreter.fromAsset(_modelAsset, options: options);
+      debugPrint('✅ GPU delegate اشتغل (أولوية: أقل زمن استجابة)');
       return interpreter;
     } catch (e) {
       debugPrint('⚠️ GPU delegate فشل ($e) — جرّب NNAPI...');
     }
 
-    // 2) NNAPI (Android فقط — بيستخدم أي مسرّع متوفر بالجهاز: DSP/NPU/GPU حسب الشريحة)
+    // 2) NNAPI — بيستغل أي مسرّع بالشريحة (NPU/DSP/GPU)
     try {
       final options = InterpreterOptions()..useNnApiForAndroid = true;
-      final interpreter = await Interpreter.fromAsset(_modelAsset, options: options);
+      final interpreter =
+          await Interpreter.fromAsset(_modelAsset, options: options);
       debugPrint('✅ NNAPI delegate اشتغل');
       return interpreter;
     } catch (e) {
-      debugPrint('⚠️ NNAPI فشل ($e) — رجوع لـ CPU عادي...');
+      debugPrint('⚠️ NNAPI فشل ($e) — رجوع لـ CPU...');
     }
 
-    // 3) CPU عادي (fallback أخير — أفضل من ما يفتح التطبيق إطلاقاً)
+    // 3) CPU (XNNPACK) — آخر حل، بعدد خيوط = أنوية الجهاز (بحد أقصى 4)
     try {
-      final options = InterpreterOptions()..threads = 4;
+      final cores = Platform.numberOfProcessors;
+      final threads = cores > 4 ? 4 : (cores < 1 ? 1 : cores);
+      final options = InterpreterOptions()..threads = threads;
+      debugPrint('ℹ️ CPU fallback بـ $threads خيوط');
       return await Interpreter.fromAsset(_modelAsset, options: options);
     } catch (e) {
       debugPrint('❌ حتى CPU فشل: $e');
@@ -87,284 +170,427 @@ class TFLiteService {
     }
   }
 
+  /// يُنشئ الـ isolate الدائم ويسلّمه عنوان الـ interpreter + أبعاد الإدخال.
+  Future<void> _startWorkerIsolate() async {
+    _fromWorker = ReceivePort();
+
+    _isolate = await Isolate.spawn(
+      _workerEntry,
+      _WorkerInit(
+        mainPort: _fromWorker!.sendPort,
+        interpreterAddress: _interpreter!.address,
+        inputWidth: _inputWidth,
+        inputHeight: _inputHeight,
+        inputTypeIndex: _inputType.index,
+        inputScale: _inputScale,
+        inputZeroPoint: _inputZeroPoint,
+        labels: _labels!,
+        confThreshold: _confThreshold,
+        iouThreshold: _iouThreshold,
+      ),
+      debugName: 'rased_tflite_worker',
+    );
+
+    final ready = Completer<void>();
+
+    _fromWorker!.listen((message) {
+      if (message is SendPort) {
+        _workerPort = message;
+        _workerReady = true;
+        if (!ready.isCompleted) ready.complete();
+        debugPrint('✅ isolate الاستنتاج الدائم جاهز');
+      } else if (message is Map<String, dynamic>) {
+        final p = _pending;
+        _pending = null;
+        if (p != null && !p.isCompleted) p.complete(message);
+      }
+    });
+
+    await ready.future;
+  }
+
   void dispose() {
+    _workerPort?.send('close');
+    _isolate?.kill(priority: Isolate.immediate);
+    _isolate = null;
+    _fromWorker?.close();
+    _fromWorker = null;
+    _workerPort = null;
+    _workerReady = false;
+    _pending = null;
     _interpreter?.close();
+    _interpreter = null;
   }
 
-  // ============================================================
-  // MANUAL MODE — صورة ثابتة
-  // ============================================================
-  Future<Map<String, dynamic>> predictImage(String imagePath) async {
-    if (_interpreter == null || _labels == null) return {'label': 'Clear Road', 'detections': []};
+  // ==========================================================================
+  // DASHCAM MODE — فريم كاميرا حي
+  // ==========================================================================
+
+  /// يرجّع `{'label': String, 'detections': List<Map>}` عند التحليل الفعلي.
+  ///
+  /// ⚠️ يرجّع **null** (مش نتيجة فاضية) إذا:
+  ///  - الفريم ضمن الفريمات المتخطّاة (frame skipping)، أو
+  ///  - الـ worker لسا مشغول بفريم سابق (back-pressure).
+  ///
+  /// التمييز بين null و'Clear Road' حرج: بدونه الفريم المتخطّى بينقرأ كأنه
+  /// "طريق نظيف" فبيمسح المربعات من الشاشة ويصفّر عدّاد التأكيد الزمني.
+  Future<Map<String, dynamic>?> predictFrameWithBoxes(
+      CameraImage cameraImage) async {
+    if (!isReady) return null;
+
+    // 1) تخطي فريمات
+    _frameCounter++;
+    if (frameSkipRate > 1 && _frameCounter % frameSkipRate != 0) return null;
+
+    // 2) رمي الفريم لو الـ worker مشغول (لا طابور، لا تأخير تراكمي)
+    if (_pending != null) return null;
+
     try {
-      final imageData = File(imagePath).readAsBytesSync();
-      final image = img.decodeImage(imageData);
-      if (image == null) return {'label': 'Clear Road', 'detections': []};
-      return _runOnDecodedImage(image, _interpreter!, _labels!, _inputWidth, _inputHeight,
-          _inputType, _inputScale, _inputZeroPoint);
+      final completer = Completer<Map<String, dynamic>>();
+      _pending = completer;
+
+      _workerPort!.send(_FramePayload(
+        isYuv: cameraImage.format.group == ImageFormatGroup.yuv420,
+        width: cameraImage.width,
+        height: cameraImage.height,
+        plane0: cameraImage.planes[0].bytes,
+        plane1:
+            cameraImage.planes.length > 1 ? cameraImage.planes[1].bytes : null,
+        plane2:
+            cameraImage.planes.length > 2 ? cameraImage.planes[2].bytes : null,
+        yRowStride: cameraImage.planes[0].bytesPerRow,
+        uvRowStride:
+            cameraImage.planes.length > 1 ? cameraImage.planes[1].bytesPerRow : 0,
+        uvPixelStride: cameraImage.planes.length > 1
+            ? (cameraImage.planes[1].bytesPerPixel ?? 1)
+            : 1,
+      ));
+
+      // حماية من التعليق لو صار خطأ غير متوقع جوا الـ worker
+      return await completer.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () {
+          _pending = null;
+          debugPrint('⚠️ انتهت مهلة الفريم — تم تجاهله');
+          return _empty;
+        },
+      );
     } catch (e) {
-      return {'label': 'Clear Road', 'detections': []};
+      _pending = null;
+      debugPrint('❌ خطأ بإرسال الفريم: $e');
+      return null;
     }
   }
 
-  // ============================================================
-  // DASHCAM MODE — فريم كاميرا حي (بالخلفية، برا الـ UI thread)
-  // ============================================================
-  Future<Map<String, dynamic>> predictFrameWithBoxes(CameraImage cameraImage) async {
-    if (_interpreter == null || _labels == null) {
-      return {'label': 'Clear Road', 'detections': []};
-    }
-    try {
-      return await compute(_processFrameInIsolate, {
-        'format': cameraImage.format.group == ImageFormatGroup.yuv420 ? 'yuv420' : 'bgra8888',
-        'width': cameraImage.width,
-        'height': cameraImage.height,
-        'plane0': cameraImage.planes[0].bytes,
-        'plane1': cameraImage.planes.length > 1 ? cameraImage.planes[1].bytes : null,
-        'plane2': cameraImage.planes.length > 2 ? cameraImage.planes[2].bytes : null,
-        'yRowStride': cameraImage.planes[0].bytesPerRow,
-        'uvRowStride': cameraImage.planes.length > 1 ? cameraImage.planes[1].bytesPerRow : 0,
-        'uvPixelStride':
-            cameraImage.planes.length > 1 ? (cameraImage.planes[1].bytesPerPixel ?? 0) : 0,
-        'inputWidth': _inputWidth,
-        'inputHeight': _inputHeight,
-        'inputType': _inputType.index,
-        'inputScale': _inputScale,
-        'inputZeroPoint': _inputZeroPoint,
-        'interpreterAddress': _interpreter!.address,
-        'labels': _labels,
-      });
-    } catch (e) {
-      debugPrint('❌ خطأ بمعالجة الفريم: $e');
-      return {'label': 'Clear Road', 'detections': []};
-    }
-  }
-
-  // للتوافق الخلفي مع أي كود قديم بيتوقع String بس
+  /// توافق خلفي مع أي كود قديم بيتوقع String بس.
   Future<String> predictFrame(CameraImage cameraImage) async {
     final result = await predictFrameWithBoxes(cameraImage);
-    return result['label'] as String? ?? 'Clear Road';
+    return result?['label'] as String? ?? 'Clear Road';
   }
 
-  static Map<String, dynamic> _processFrameInIsolate(Map<String, dynamic> params) {
-    try {
-      final int width = params['width'];
-      final int height = params['height'];
-      final int inputWidth = params['inputWidth'];
-      final int inputHeight = params['inputHeight'];
-      final TensorType inputType = TensorType.values[params['inputType']];
-      final double inputScale = params['inputScale'];
-      final int inputZeroPoint = params['inputZeroPoint'];
-      final int address = params['interpreterAddress'];
-      final labels = (params['labels'] as List<dynamic>).map((e) => e.toString()).toList();
-      final interpreter = Interpreter.fromAddress(address);
+  // ==========================================================================
+  // MANUAL MODE — صورة ثابتة (استدعاء واحد، مش لايف)
+  // ==========================================================================
 
-      // تحويل اللون + تصغير الحجم بمرور واحد بس، على أبعاد المودل مباشرة (640×640 مثلاً)
-      // بدل تحويل الفريم كامل (ممكن يكون 1080p+) لصورة RGB كاملة الأبعاد ثم تصغيرها لاحقاً.
-      // هاد لوحده بيقلل عدد البكسلات المعالَجة بعشرات المرات.
-      final inputBuffer = _buildInputBufferDirect(
-        params: params,
-        width: width,
-        height: height,
-        inputWidth: inputWidth,
-        inputHeight: inputHeight,
-        inputType: inputType,
-        inputScale: inputScale,
-        inputZeroPoint: inputZeroPoint,
+  /// يرجّع `{'label': String, 'detections': List<Map>}`.
+  ///
+  /// ⚠️ تنبيه: يرجّع Map مش String (تغيّر عن النسخة القديمة).
+  /// الاستخدام الصحيح: `final r = await predictImage(path); r['label'] as String`
+  Future<Map<String, dynamic>> predictImage(String imagePath) async {
+    if (_interpreter == null || _labels == null) return _empty;
+    try {
+      final bytes = await File(imagePath).readAsBytes();
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) return _empty;
+
+      final resized = img.copyResize(
+        decoded,
+        width: _inputWidth,
+        height: _inputHeight,
+        interpolation: img.Interpolation.linear,
       );
 
-      return _runInterpreterWithBuffer(interpreter, inputBuffer, inputType, labels);
+      final totalPixels = _inputWidth * _inputHeight;
+      final TypedData buffer;
+
+      if (_inputType == TensorType.float32) {
+        final f = Float32List(totalPixels * 3);
+        int i = 0;
+        for (int y = 0; y < _inputHeight; y++) {
+          for (int x = 0; x < _inputWidth; x++) {
+            final p = resized.getPixel(x, y);
+            f[i++] = p.r / 255.0;
+            f[i++] = p.g / 255.0;
+            f[i++] = p.b / 255.0;
+          }
+        }
+        buffer = f;
+      } else {
+        final u = Uint8List(totalPixels * 3);
+        final scale = _inputScale == 0 ? 1.0 : _inputScale;
+        int i = 0;
+        for (int y = 0; y < _inputHeight; y++) {
+          for (int x = 0; x < _inputWidth; x++) {
+            final p = resized.getPixel(x, y);
+            u[i++] =
+                ((p.r / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
+            u[i++] =
+                ((p.g / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
+            u[i++] =
+                ((p.b / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
+          }
+        }
+        buffer = u;
+      }
+
+      return _runInference(
+        interpreter: _interpreter!,
+        inputBuffer: buffer,
+        labels: _labels!,
+        confThreshold: _confThreshold,
+        iouThreshold: _iouThreshold,
+        cache: null,
+      );
     } catch (e) {
-      return {'label': 'Clear Road', 'detections': []};
+      debugPrint('❌ خطأ بتحليل الصورة: $e');
+      return _empty;
     }
   }
 
-  /// يبني الـ input buffer مباشرة من بيانات الكاميرا الخام (YUV420 أو BGRA8888)،
-  /// بأخذ عيّنة nearest-neighbor على أبعاد المودل مباشرة — بدون تحويل الصورة كاملة أول.
-  static TypedData _buildInputBufferDirect({
-    required Map<String, dynamic> params,
-    required int width,
-    required int height,
+  static Map<String, dynamic> get _empty =>
+      {'label': 'Clear Road', 'detections': const <Map<String, dynamic>>[]};
+
+  // ==========================================================================
+  // الـ WORKER ISOLATE
+  // ==========================================================================
+
+  static void _workerEntry(_WorkerInit init) {
+    final rp = ReceivePort();
+    init.mainPort.send(rp.sendPort);
+
+    final interpreter = Interpreter.fromAddress(init.interpreterAddress);
+    final inputType = TensorType.values[init.inputTypeIndex];
+    final w = init.inputWidth;
+    final h = init.inputHeight;
+    final totalPixels = w * h;
+
+    // ── تخصيص مرة واحدة فقط (بدل كل فريم) ────────────────────────────────
+    final Float32List? floatBuf =
+        inputType == TensorType.float32 ? Float32List(totalPixels * 3) : null;
+    final Uint8List? uint8Buf =
+        inputType != TensorType.float32 ? Uint8List(totalPixels * 3) : null;
+
+    // جداول بحث للإحداثيات: بتلغي عمليتي قسمة integer لكل بكسل داخل اللوب.
+    final xMap = Int32List(w);
+    final yMap = Int32List(h);
+
+    final cache = _OutputCache(interpreter);
+
+    int lastSrcW = -1, lastSrcH = -1;
+
+    rp.listen((message) {
+      if (message == 'close') {
+        rp.close();
+        return;
+      }
+      if (message is! _FramePayload) return;
+
+      try {
+        final f = message;
+
+        // إعادة بناء جداول البحث فقط لو تغيّرت دقة الكاميرا
+        if (f.width != lastSrcW || f.height != lastSrcH) {
+          for (int tx = 0; tx < w; tx++) {
+            final v = tx * f.width ~/ w;
+            xMap[tx] = v >= f.width ? f.width - 1 : v;
+          }
+          for (int ty = 0; ty < h; ty++) {
+            final v = ty * f.height ~/ h;
+            yMap[ty] = v >= f.height ? f.height - 1 : v;
+          }
+          lastSrcW = f.width;
+          lastSrcH = f.height;
+        }
+
+        _fillInputBuffer(
+          frame: f,
+          inputWidth: w,
+          inputHeight: h,
+          xMap: xMap,
+          yMap: yMap,
+          floatBuf: floatBuf,
+          uint8Buf: uint8Buf,
+          inputScale: init.inputScale,
+          inputZeroPoint: init.inputZeroPoint,
+        );
+
+        final result = _runInference(
+          interpreter: interpreter,
+          inputBuffer: (floatBuf ?? uint8Buf)!,
+          labels: init.labels,
+          confThreshold: init.confThreshold,
+          iouThreshold: init.iouThreshold,
+          cache: cache,
+        );
+
+        init.mainPort.send(result);
+      } catch (e) {
+        init.mainPort
+            .send({'label': 'Clear Road', 'detections': <Map<String, dynamic>>[]});
+      }
+    });
+  }
+
+  /// يعبّي الـ buffer الجاهز مباشرة من بيانات الكاميرا الخام.
+  /// تحويل اللون + التصغير بمرور واحد، بدون أي تخصيص ذاكرة جديد.
+  static void _fillInputBuffer({
+    required _FramePayload frame,
     required int inputWidth,
     required int inputHeight,
-    required TensorType inputType,
+    required Int32List xMap,
+    required Int32List yMap,
+    required Float32List? floatBuf,
+    required Uint8List? uint8Buf,
     required double inputScale,
     required int inputZeroPoint,
   }) {
-    final String format = params['format'];
-    final int totalPixels = inputWidth * inputHeight;
+    final bool isFloat = floatBuf != null;
+    final double scale = inputScale == 0 ? 1.0 : inputScale;
+    // للتكميم: نحسب المعامل مرة وحدة برا اللوب بدل قسمة لكل قناة لكل بكسل.
+    final double qFactor = 1.0 / (255.0 * scale);
 
-    final Float32List? floatBuffer =
-        inputType == TensorType.float32 ? Float32List(totalPixels * 3) : null;
-    final Uint8List? uint8Buffer =
-        inputType != TensorType.float32 ? Uint8List(totalPixels * 3) : null;
+    int dst = 0;
 
-    void writePixel(int destIndex, int r, int g, int b) {
-      if (floatBuffer != null) {
-        floatBuffer[destIndex] = r / 255.0;
-        floatBuffer[destIndex + 1] = g / 255.0;
-        floatBuffer[destIndex + 2] = b / 255.0;
-      } else {
-        // تكميم: quantized = round(real_value / scale) + zero_point
-        int q(int channel255) {
-          final real = channel255 / 255.0;
-          final scale = inputScale == 0 ? 1.0 : inputScale;
-          return (real / scale + inputZeroPoint).round().clamp(0, 255);
-        }
+    if (frame.isYuv) {
+      final p0 = frame.plane0;
+      final p1 = frame.plane1;
+      final p2 = frame.plane2;
+      if (p1 == null || p2 == null) throw Exception('YUV420 بدون chroma planes');
 
-        uint8Buffer![destIndex] = q(r);
-        uint8Buffer[destIndex + 1] = q(g);
-        uint8Buffer[destIndex + 2] = q(b);
-      }
-    }
-
-    if (format == 'yuv420') {
-      final Uint8List plane0 = params['plane0'];
-      final Uint8List? plane1 = params['plane1'];
-      final Uint8List? plane2 = params['plane2'];
-      final int yRowStride = params['yRowStride'];
-      final int uvRowStride = params['uvRowStride'];
-      final int uvPixelStride = params['uvPixelStride'];
-
-      if (plane1 == null || plane2 == null) {
-        throw Exception('YUV420 بدون chroma planes');
-      }
+      final yStride = frame.yRowStride;
+      final uvStride = frame.uvRowStride;
+      final uvPixel = frame.uvPixelStride;
 
       for (int ty = 0; ty < inputHeight; ty++) {
-        final int sy = (ty * height ~/ inputHeight).clamp(0, height - 1);
+        final sy = yMap[ty];
+        final yRow = sy * yStride;
+        final uvRow = (sy >> 1) * uvStride;
+
         for (int tx = 0; tx < inputWidth; tx++) {
-          final int sx = (tx * width ~/ inputWidth).clamp(0, width - 1);
+          final sx = xMap[tx];
+          final uvIdx = uvPixel * (sx >> 1) + uvRow;
 
-          final int uvIndex = uvPixelStride * (sx ~/ 2) + uvRowStride * (sy ~/ 2);
-          final int yIndex = sy * yRowStride + sx;
+          final yp = p0[yRow + sx];
+          final up = p1[uvIdx];
+          final vp = p2[uvIdx];
 
-          final int yp = plane0[yIndex];
-          final int up = plane1[uvIndex];
-          final int vp = plane2[uvIndex];
+          // BT.601 بحساب صحيح (integer) — أسرع من الكسور العشرية
+          int r = yp + ((vp - 128) * 1436 >> 10);
+          int g = yp - ((up - 128) * 352 >> 10) - ((vp - 128) * 731 >> 10);
+          int b = yp + ((up - 128) * 1814 >> 10);
 
-          final int r = (yp + vp * 1436 / 1024 - 179).round().clamp(0, 255);
-          final int g =
-              (yp - up * 46549 / 131072 + 44 - vp * 93604 / 131072 + 91).round().clamp(0, 255);
-          final int b = (yp + up * 1814 / 1024 - 227).round().clamp(0, 255);
+          r = r < 0 ? 0 : (r > 255 ? 255 : r);
+          g = g < 0 ? 0 : (g > 255 ? 255 : g);
+          b = b < 0 ? 0 : (b > 255 ? 255 : b);
 
-          final int destIndex = (ty * inputWidth + tx) * 3;
-          writePixel(destIndex, r, g, b);
+          if (isFloat) {
+            floatBuf[dst++] = r * 0.00392156862745098; // r / 255
+            floatBuf[dst++] = g * 0.00392156862745098;
+            floatBuf[dst++] = b * 0.00392156862745098;
+          } else {
+            uint8Buf![dst++] =
+                (r * qFactor + inputZeroPoint).round().clamp(0, 255);
+            uint8Buf[dst++] =
+                (g * qFactor + inputZeroPoint).round().clamp(0, 255);
+            uint8Buf[dst++] =
+                (b * qFactor + inputZeroPoint).round().clamp(0, 255);
+          }
         }
       }
     } else {
-      // bgra8888 (iOS غالباً)
-      final Uint8List plane0 = params['plane0'];
+      // BGRA8888 (iOS غالباً)
+      final p0 = frame.plane0;
+      final srcW = frame.width;
+
       for (int ty = 0; ty < inputHeight; ty++) {
-        final int sy = (ty * height ~/ inputHeight).clamp(0, height - 1);
+        final rowBase = yMap[ty] * srcW;
         for (int tx = 0; tx < inputWidth; tx++) {
-          final int sx = (tx * width ~/ inputWidth).clamp(0, width - 1);
-          final int srcIndex = (sy * width + sx) * 4;
+          final src = (rowBase + xMap[tx]) << 2;
+          final b = p0[src];
+          final g = p0[src + 1];
+          final r = p0[src + 2];
 
-          final int b = plane0[srcIndex];
-          final int g = plane0[srcIndex + 1];
-          final int r = plane0[srcIndex + 2];
-
-          final int destIndex = (ty * inputWidth + tx) * 3;
-          writePixel(destIndex, r, g, b);
+          if (isFloat) {
+            floatBuf[dst++] = r * 0.00392156862745098;
+            floatBuf[dst++] = g * 0.00392156862745098;
+            floatBuf[dst++] = b * 0.00392156862745098;
+          } else {
+            uint8Buf![dst++] =
+                (r * qFactor + inputZeroPoint).round().clamp(0, 255);
+            uint8Buf[dst++] =
+                (g * qFactor + inputZeroPoint).round().clamp(0, 255);
+            uint8Buf[dst++] =
+                (b * qFactor + inputZeroPoint).round().clamp(0, 255);
+          }
         }
       }
     }
-
-    return floatBuffer ?? uint8Buffer!;
   }
 
-  static Map<String, dynamic> _runOnDecodedImage(
-    img.Image image,
-    Interpreter interpreter,
-    List<String> labels,
-    int inputWidth,
-    int inputHeight,
-    TensorType inputType,
-    double inputScale,
-    int inputZeroPoint,
-  ) {
-    final resized = img.copyResize(image, width: inputWidth, height: inputHeight);
-    final totalPixels = inputWidth * inputHeight;
+  // ==========================================================================
+  // الاستنتاج ومعالجة المخرجات
+  // ==========================================================================
 
-    final TypedData buffer;
-    if (inputType == TensorType.float32) {
-      final f = Float32List(totalPixels * 3);
-      int i = 0;
-      for (int y = 0; y < inputHeight; y++) {
-        for (int x = 0; x < inputWidth; x++) {
-          final p = resized.getPixel(x, y);
-          f[i++] = p.r / 255.0;
-          f[i++] = p.g / 255.0;
-          f[i++] = p.b / 255.0;
-        }
-      }
-      buffer = f;
-    } else {
-      final u = Uint8List(totalPixels * 3);
-      final scale = inputScale == 0 ? 1.0 : inputScale;
-      int i = 0;
-      for (int y = 0; y < inputHeight; y++) {
-        for (int x = 0; x < inputWidth; x++) {
-          final p = resized.getPixel(x, y);
-          u[i++] = ((p.r / 255.0) / scale + inputZeroPoint).round().clamp(0, 255);
-          u[i++] = ((p.g / 255.0) / scale + inputZeroPoint).round().clamp(0, 255);
-          u[i++] = ((p.b / 255.0) / scale + inputZeroPoint).round().clamp(0, 255);
-        }
-      }
-      buffer = u;
-    }
-
-    return _runInterpreterWithBuffer(interpreter, buffer, inputType, labels);
-  }
-
-  /// يشغّل الاستنتاج ويقرر تلقائياً شكل الـ output ويتعامل معه:
-  /// - end2end: (1, 300, 6) [x1,y1,x2,y2,conf,class_id] — يطلع من FP32/w8a32 (nms=False اشتغل)
-  /// - raw:     (1, nc+4, N) — يطلع من INT8 تحديداً (Ultralytics بيعطّل end2end تلقائياً مع
-  ///   تكميم INT8 الثابت، بغض النظر شو مررنا بـ nms=)، فمحتاج فك تشفير + NMS يدوي هون.
-  static Map<String, dynamic> _runInterpreterWithBuffer(
-    Interpreter interpreter,
-    TypedData inputBuffer,
-    TensorType inputType,
-    List<String> labels,
-  ) {
-    final outputTensor = interpreter.getOutputTensor(0);
-    final outputShape = outputTensor.shape; // [1, 300, 6] أو [1, nc+4, N]
-
-    final bool isEndToEnd = outputShape.length == 3 && outputShape[2] == 6;
+  /// يقرر تلقائياً شكل الـ output:
+  ///  - `(1, 300, 6)` end-to-end → قراءة مباشرة، بدون NMS يدوي (المتوقع من w8a32)
+  ///  - أي شكل تاني `(1, nc+4, N)` → فك تشفير + NMS يدوي (مسار احتياطي لـ INT8)
+  static Map<String, dynamic> _runInference({
+    required Interpreter interpreter,
+    required TypedData inputBuffer,
+    required List<String> labels,
+    required double confThreshold,
+    required double iouThreshold,
+    required _OutputCache? cache,
+  }) {
+    final outputShape = interpreter.getOutputTensor(0).shape;
+    final isEndToEnd = outputShape.length == 3 && outputShape[2] == 6;
 
     if (isEndToEnd) {
-      return _parseEndToEndOutput(interpreter, inputBuffer, outputShape, labels);
+      final out = cache?.endToEnd(outputShape) ?? _allocEndToEnd(outputShape);
+      interpreter.run([inputBuffer], out);
+      return _parseEndToEnd(out[0], labels, confThreshold);
     } else {
-      return _parseRawOutputWithNMS(interpreter, inputBuffer, outputShape, labels);
+      final out = cache?.raw(outputShape) ?? _allocRaw(outputShape);
+      interpreter.run([inputBuffer], out);
+      return _parseRawWithNMS(out[0], labels, confThreshold, iouThreshold);
     }
   }
 
-  /// شكل جاهز (1, 300, 6): [x1, y1, x2, y2, conf, class_id] — بدون أي فك تشفير أو NMS يدوي.
-  static Map<String, dynamic> _parseEndToEndOutput(
-    Interpreter interpreter,
-    TypedData inputBuffer,
-    List<int> outputShape,
+  static List<List<List<double>>> _allocEndToEnd(List<int> shape) =>
+      List.generate(1, (_) => List.generate(shape[1], (_) => List.filled(6, 0.0)));
+
+  static List<List<List<double>>> _allocRaw(List<int> shape) => List.generate(
+      1, (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+
+  /// `(1, 300, 6)` → [x1, y1, x2, y2, conf, class_id] بإحداثيات مطبّعة 0-1.
+  static Map<String, dynamic> _parseEndToEnd(
+    List<List<double>> rows,
     List<String> labels,
+    double confThreshold,
   ) {
-    final maxDet = outputShape[1];
-    final outputBuffer =
-        List.generate(1, (_) => List.generate(maxDet, (_) => List.filled(6, 0.0)));
-
-    interpreter.run([inputBuffer], outputBuffer);
-
-    final parsed = outputBuffer[0] as List<List<double>>;
     final detections = <Map<String, dynamic>>[];
-
     String bestLabel = 'Clear Road';
     double maxScore = 0.0;
 
-    for (final row in parsed) {
-      final double conf = row[4];
-      if (conf < _confThreshold) continue;
+    for (final row in rows) {
+      final conf = row[4];
+      // المخرجات مرتّبة تنازلياً حسب الثقة، فأول صف تحت العتبة = وقف.
+      if (conf < confThreshold) break;
 
-      final int classId = row[5].round();
-      final String label =
-          (classId >= 0 && classId < labels.length) ? labels[classId] : 'Class $classId';
+      final classId = row[5].round();
+      final label = (classId >= 0 && classId < labels.length)
+          ? labels[classId]
+          : 'Class $classId';
 
       detections.add({
         'x1': row[0].clamp(0.0, 1.0),
@@ -384,59 +610,49 @@ class TFLiteService {
     return {'label': bestLabel, 'detections': detections};
   }
 
-  /// شكل خام (1, nc+4, N): كل عمود = صندوق مرشّح [cx, cy, w, h, score_class0, score_class1, ...]
-  /// (إحداثيات cx/cy/w/h مطبّعة 0-1). لازم فك تشفير + NMS يدوي هون لأنه ما في NMS جوا الموديل.
-  static Map<String, dynamic> _parseRawOutputWithNMS(
-    Interpreter interpreter,
-    TypedData inputBuffer,
-    List<int> outputShape,
+  /// `(1, nc+4, N)` → كل عمود صندوق مرشّح [cx, cy, w, h, scores...] + NMS يدوي.
+  static Map<String, dynamic> _parseRawWithNMS(
+    List<List<double>> raw,
     List<String> labels,
+    double confThreshold,
+    double iouThreshold,
   ) {
-    final int numChannels = outputShape[1]; // nc + 4
-    final int numAnchors = outputShape[2];
-    final int numClasses = numChannels - 4;
+    final numChannels = raw.length;
+    final numAnchors = raw[0].length;
+    final numClasses = numChannels - 4;
 
-    final outputBuffer = List.generate(
-      1,
-      (_) => List.generate(numChannels, (_) => List.filled(numAnchors, 0.0)),
-    );
-
-    interpreter.run([inputBuffer], outputBuffer);
-    final raw = outputBuffer[0] as List<List<double>>;
-
-    // كل مرشّح: [cx, cy, w, h, conf, classId, x1, y1, x2, y2] — منجمعهم هون قبل NMS
     final candidates = <List<double>>[];
 
     for (int a = 0; a < numAnchors; a++) {
       double bestScore = 0.0;
       int bestClass = 0;
       for (int c = 0; c < numClasses; c++) {
-        final double score = raw[4 + c][a];
-        if (score > bestScore) {
-          bestScore = score;
+        final s = raw[4 + c][a];
+        if (s > bestScore) {
+          bestScore = s;
           bestClass = c;
         }
       }
-      if (bestScore < _confThreshold) continue;
+      if (bestScore < confThreshold) continue;
 
-      final double cx = raw[0][a];
-      final double cy = raw[1][a];
-      final double w = raw[2][a];
-      final double h = raw[3][a];
+      final cx = raw[0][a];
+      final cy = raw[1][a];
+      final bw = raw[2][a];
+      final bh = raw[3][a];
 
-      final double x1 = (cx - w / 2).clamp(0.0, 1.0);
-      final double y1 = (cy - h / 2).clamp(0.0, 1.0);
-      final double x2 = (cx + w / 2).clamp(0.0, 1.0);
-      final double y2 = (cy + h / 2).clamp(0.0, 1.0);
-
-      candidates.add([x1, y1, x2, y2, bestScore, bestClass.toDouble()]);
+      candidates.add([
+        (cx - bw / 2).clamp(0.0, 1.0),
+        (cy - bh / 2).clamp(0.0, 1.0),
+        (cx + bw / 2).clamp(0.0, 1.0),
+        (cy + bh / 2).clamp(0.0, 1.0),
+        bestScore,
+        bestClass.toDouble(),
+      ]);
     }
 
-    // NMS: نرتب تنازلياً حسب الثقة، ونقصي أي صندوق متداخل بشدة (IoU عالي) مع صندوق أقوى منه
     candidates.sort((a, b) => b[4].compareTo(a[4]));
-    const double iouThreshold = 0.45;
-    final kept = <List<double>>[];
 
+    final kept = <List<double>>[];
     for (final cand in candidates) {
       bool suppressed = false;
       for (final k in kept) {
@@ -446,7 +662,7 @@ class TFLiteService {
         }
       }
       if (!suppressed) kept.add(cand);
-      if (kept.length >= 300) break; // نفس الحد الأقصى المستخدم بالنماذج end2end
+      if (kept.length >= 300) break;
     }
 
     final detections = <Map<String, dynamic>>[];
@@ -454,9 +670,10 @@ class TFLiteService {
     double maxScore = 0.0;
 
     for (final box in kept) {
-      final int classId = box[5].round();
-      final String label =
-          (classId >= 0 && classId < labels.length) ? labels[classId] : 'Class $classId';
+      final classId = box[5].round();
+      final label = (classId >= 0 && classId < labels.length)
+          ? labels[classId]
+          : 'Class $classId';
 
       detections.add({
         'x1': box[0],
@@ -477,19 +694,87 @@ class TFLiteService {
   }
 
   static double _iou(List<double> a, List<double> b) {
-    final double x1 = a[0] > b[0] ? a[0] : b[0];
-    final double y1 = a[1] > b[1] ? a[1] : b[1];
-    final double x2 = a[2] < b[2] ? a[2] : b[2];
-    final double y2 = a[3] < b[3] ? a[3] : b[3];
+    final x1 = a[0] > b[0] ? a[0] : b[0];
+    final y1 = a[1] > b[1] ? a[1] : b[1];
+    final x2 = a[2] < b[2] ? a[2] : b[2];
+    final y2 = a[3] < b[3] ? a[3] : b[3];
 
-    final double interW = (x2 - x1).clamp(0.0, double.infinity);
-    final double interH = (y2 - y1).clamp(0.0, double.infinity);
-    final double interArea = interW * interH;
+    final iw = (x2 - x1) > 0 ? (x2 - x1) : 0.0;
+    final ih = (y2 - y1) > 0 ? (y2 - y1) : 0.0;
+    final inter = iw * ih;
 
-    final double areaA = (a[2] - a[0]) * (a[3] - a[1]);
-    final double areaB = (b[2] - b[0]) * (b[3] - b[1]);
-    final double unionArea = areaA + areaB - interArea;
+    final areaA = (a[2] - a[0]) * (a[3] - a[1]);
+    final areaB = (b[2] - b[0]) * (b[3] - b[1]);
+    final union = areaA + areaB - inter;
 
-    return unionArea <= 0 ? 0.0 : interArea / unionArea;
+    return union <= 0 ? 0.0 : inter / union;
   }
+}
+
+/// يحتفظ بـ output buffers مخصّصة مرة وحدة ويعيد استخدامها كل فريم.
+class _OutputCache {
+  _OutputCache(this._interpreter);
+  // ignore: unused_field
+  final Interpreter _interpreter;
+
+  List<List<List<double>>>? _endToEnd;
+  List<List<List<double>>>? _raw;
+
+  List<List<List<double>>> endToEnd(List<int> shape) =>
+      _endToEnd ??= TFLiteService._allocEndToEnd(shape);
+
+  List<List<List<double>>> raw(List<int> shape) =>
+      _raw ??= TFLiteService._allocRaw(shape);
+}
+
+/// بيانات التهيئة المُرسلة للـ isolate مرة واحدة عند الإنشاء.
+class _WorkerInit {
+  const _WorkerInit({
+    required this.mainPort,
+    required this.interpreterAddress,
+    required this.inputWidth,
+    required this.inputHeight,
+    required this.inputTypeIndex,
+    required this.inputScale,
+    required this.inputZeroPoint,
+    required this.labels,
+    required this.confThreshold,
+    required this.iouThreshold,
+  });
+
+  final SendPort mainPort;
+  final int interpreterAddress;
+  final int inputWidth;
+  final int inputHeight;
+  final int inputTypeIndex;
+  final double inputScale;
+  final int inputZeroPoint;
+  final List<String> labels;
+  final double confThreshold;
+  final double iouThreshold;
+}
+
+/// حمولة فريم واحد مُرسلة للـ isolate.
+class _FramePayload {
+  const _FramePayload({
+    required this.isYuv,
+    required this.width,
+    required this.height,
+    required this.plane0,
+    required this.plane1,
+    required this.plane2,
+    required this.yRowStride,
+    required this.uvRowStride,
+    required this.uvPixelStride,
+  });
+
+  final bool isYuv;
+  final int width;
+  final int height;
+  final Uint8List plane0;
+  final Uint8List? plane1;
+  final Uint8List? plane2;
+  final int yRowStride;
+  final int uvRowStride;
+  final int uvPixelStride;
 }
