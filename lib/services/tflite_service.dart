@@ -34,7 +34,7 @@ const int _kGpuPriorityMinLatency = 2; // ⚡ هدفنا الأول: أقل زم
 // ignore: unused_element
 const int _kGpuPriorityMinMemoryUsage = 3;
 
-/// خدمة الاستنتاج المحلي (YOLO26n / best_w8a32.tflite).
+/// خدمة الاستنتاج المحلي (YOLO26n / best_float16.tflite).
 ///
 /// تحسينات الأداء المطبّقة:
 ///  1. GPU delegate بأولوية MIN_LATENCY (بدل MAX_PRECISION الافتراضي).
@@ -96,7 +96,7 @@ class TFLiteService {
   // ضبط العتبة لاحقاً مبنياً على صور الهاتف لا على بيانات التدريب فقط.
   static const double _confThreshold = 0.20;
   static const double _iouThreshold = 0.45;
-  static const String _modelAsset = 'assets/best_w8a32.tflite';
+  static const String _modelAsset = 'assets/best_float16.tflite';
 
   bool get isReady => _startupError == null && _interpreter != null;
   String? get diagnosticError => _startupError;
@@ -109,7 +109,7 @@ class TFLiteService {
   Future<void> initializeModel() async {
     if (_interpreter != null) return; // تهيئة مرة وحدة بس
 
-    _addDiagnostic('AI | Loading best_w8a32.tflite…');
+    _addDiagnostic('AI | Loading best_float16.tflite…');
     _interpreter = await _loadInterpreterWithBestDelegate();
     if (_interpreter == null) {
       _startupError ??=
@@ -218,15 +218,14 @@ class TFLiteService {
     try {
       _addDiagnostic('AI | Testing GPU delegate…');
       final gpuOptions = GpuDelegateOptionsV2(
-        // يسمح للـ GPU يشتغل FP16 / يكمّم داخلياً. الموديل أصلاً w8a32
-        // فالفقدان بالدقة مهمل عملياً، والمكسب بالسرعة كبير.
+        // يسمح للـ GPU يشتغل بدقة FP16 داخلياً (الموديل نفسه float16 أصلاً)
+        // — فرق الدقة مهمل عملياً، والمكسب بالسرعة كبير.
         isPrecisionLossAllowed: true,
         inferencePreference: _kGpuUsageFastSingleAnswer,
         // ⚡ الافتراضي هو MAX_PRECISION — نحن بدنا العكس تماماً.
         inferencePriority1: _kGpuPriorityMinLatency,
         inferencePriority2: _kGpuPriorityAuto,
         inferencePriority3: _kGpuPriorityAuto,
-        // ENABLE_QUANT مفعّل افتراضياً وهو ضروري لموديل w8a32 (تنسورات مكمّمة).
         maxDelegatePartitions: 1,
       );
       try {
