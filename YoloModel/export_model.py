@@ -16,9 +16,11 @@ export_model.py
    تلقائياً بدقة FP16 وقت التشغيل عبر GPU delegate (WebGPU/OpenCL/Metal).
    (quantize لـ litert بيقبل بس: 8, 'w8a16', 'w8a32', أو None/32 — مو 16)
 
-مهم جداً: nms=False → الموديل رح يرجّع output جاهز بشكل (1, 300, 6)
-[x1, y1, x2, y2, confidence, class_id] بدل الشكل الخام (1, nc+4, 8400).
-هاد بيلغي الحاجة للـ NMS اليدوي بـ Dart بالكامل — لازم يترافق مع تحديث tflite_service.dart.
+مهم جداً: nms=False → الموديل يرجّع المخرج الخام (1, nc+4, N)، وغالباً
+(1, 5, 8400) عند وجود class واحد. التطبيق يفكّه ويطبق NMS يدوياً في Dart.
+أما nms=True فهو الذي يضيف NMS إلى الموديل ويعطي مخرجاً end-to-end مثل
+(1, 300, 6). نحافظ على nms=False لأنه أبسط وأكثر قابلية للنقل بين CPU/GPU/
+NNAPI، خصوصاً مع موديل W8A32.
 """
 
 from pathlib import Path
@@ -39,7 +41,7 @@ def export_fp32():
         format="litert",
         imgsz=IMGSZ,
         quantize=None,  # FP32 — القيمة الافتراضية لـ litert
-        nms=False,      # output جاهز (1,300,6) بدون NMS يدوي بالتطبيق
+        nms=False,      # raw [1, nc + 4, N]؛ التطبيق يطبق NMS يدوياً
     )
     print(f"   ✅ {path}")
     return path
@@ -83,9 +85,10 @@ if __name__ == "__main__":
     print(f"   {w8a32_path}  →  assets/best_w8a32.tflite  (وسط)")
     print(f"   {int8_path}   →  assets/best_int8.tflite   (الأسرع — توقعنا نستخدم هاد بالنهاية)")
     print("=" * 60)
-    print("\n⚠️  قبل ما تنسخوا أي وحدة: تأكدوا من شكل الـ output tensor (لازم (1, 300, 6)):")
+    print("\n⚠️  قبل ما تنسخوا أي وحدة: افحصوا شكل الـ output tensor:")
+    print("    nms=False → raw (1, nc + 4, N)؛ nms=True → end-to-end (1, 300, 6)")
     print("    from ultralytics import YOLO")
     print(f"    m = YOLO('{int8_path}')")
     print("    print(m.model.overrides)  # أو افحصوا بـ TFLite interpreter مباشرة")
-    print("\n📝 تذكير: tflite_service.dart فيه _modelAsset مكتوب 'assets/best_int8.tflite' ثابت —")
-    print("    لو بدك تجرب fp32 أو w8a32 بالتطبيق فعلياً، غيّر هاد السطر مؤقتاً.")
+    print("\n📝 تذكير: التطبيق الحالي يستخدم 'assets/best_w8a32.tflite'.")
+    print("    لو بدك تجرب fp32 أو int8 بالتطبيق فعلياً، غيّر _modelAsset وpubspec.yaml معاً.")

@@ -34,7 +34,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
       ValueNotifier<List<Map<String, dynamic>>>(const []);
   final ValueNotifier<String> _prediction =
       ValueNotifier<String>('Scanning road...');
-  // لوحة تشخيص مؤقتة للاختبار الميداني؛ لا تعتمد على logcat أو USB.
+  // ملخص حي للتنبؤ الحالي. سجل محاولات الـ backend نفسه موجود في
+  // TFLiteService ويظهر معه على الشاشة، فلا نحتاج Logcat أو USB.
   final ValueNotifier<String> _diagnostics =
       ValueNotifier<String>('AI: waiting for first frame…');
 
@@ -525,7 +526,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
           if (_isUploadingReport)
             Positioned(
               right: 24,
-              top: 150,
+              top: 268,
               child: Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -623,36 +624,93 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     );
   }
 
-  /// ظاهرة فقط في هذه المرحلة لتشخيص الهاتف مباشرة. تحذف لاحقاً بإزالة
-  /// `_buildDiagnosticsPanel()` والـ ValueNotifier الخاص بها.
+  /// سجل تشخيص ظاهر على الهاتف: يبين الـ backend المختار، محاولات GPU / NNAPI
+  /// / CPU، وآخر خطأ مختصر. بهذا يمكن اختبار الجهاز ميدانياً بلا USB.
   Widget _buildDiagnosticsPanel() {
     return Positioned(
       top: 126,
       left: 16,
       right: 16,
-      child: ValueListenableBuilder<String>(
-        valueListenable: _diagnostics,
-        builder: (_, text, __) => Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-          decoration: BoxDecoration(
-            color: text.startsWith('AI ERROR')
-                ? Colors.red.withValues(alpha: 0.85)
-                : Colors.black.withValues(alpha: 0.72),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
-          ),
-          child: Text(
-            text,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontFamily: 'monospace',
-              fontWeight: FontWeight.w600,
-            ),
-          ),
+      child: ValueListenableBuilder<List<String>>(
+        valueListenable: _tfliteService.diagnosticEvents,
+        builder: (_, events, __) => ValueListenableBuilder<String>(
+          valueListenable: _diagnostics,
+          builder: (_, summary, __) {
+            final hasError = summary.startsWith('AI ERROR') ||
+                events.any((event) => event.contains('ERROR'));
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: hasError
+                    ? Colors.red.withValues(alpha: 0.86)
+                    : Colors.black.withValues(alpha: 0.74),
+                borderRadius: BorderRadius.circular(10),
+                border:
+                    Border.all(color: Colors.white.withValues(alpha: 0.18)),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        hasError
+                            ? Icons.error_outline_rounded
+                            : Icons.memory_rounded,
+                        color: hasError ? Colors.white : const Color(0xFFFFD700),
+                        size: 16,
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        'AI device log — no USB needed',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    summary,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  if (events.isNotEmpty) ...[
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: Divider(height: 1, color: Colors.white30),
+                    ),
+                    for (final event in events)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 1),
+                        child: Text(
+                          event,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textDirection: TextDirection.ltr,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontFamily: 'monospace',
+                            fontSize: 10,
+                            height: 1.2,
+                          ),
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            );
+          },
         ),
       ),
     );

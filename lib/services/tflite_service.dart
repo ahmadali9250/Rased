@@ -1,6 +1,4 @@
-import 'dart:async';
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -23,7 +21,8 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 /// ============================================================================
 
 // TfLiteGpuInferenceUsage
-const int _kGpuUsageFastSingleAnswer = 0; // فريم واحد بكل استدعاء (حالتنا بالضبط)
+const int _kGpuUsageFastSingleAnswer =
+    0; // فريم واحد بكل استدعاء (حالتنا بالضبط)
 // ignore: unused_element
 const int _kGpuUsageSustainedSpeed = 1; // throughput مستمر (batch) — مش حالتنا
 
@@ -39,10 +38,10 @@ const int _kGpuPriorityMinMemoryUsage = 3;
 ///
 /// تحسينات الأداء المطبّقة:
 ///  1. GPU delegate بأولوية MIN_LATENCY (بدل MAX_PRECISION الافتراضي).
-///  2. **Isolate دائم** — يُنشأ مرة واحدة فقط بدل `compute()` اللي بيولّد
-///     isolate جديد كل فريم (تكلفة إنشاء/إنهاء الـ isolate كانت أغلى من
-///     الاستنتاج نفسه أحياناً).
-///  3. **Back-pressure**: أي فريم يوصل والـ worker مشغول بينرمي فوراً،
+///  2. الاستنتاج الحي يعمل مؤقتاً على الـ main isolate نفسه الذي أنشأ
+///     الـ Interpreter والـ delegate. هذا يمنع خطأ
+///     `Bad state: failed precondition` عند استخدام Interpreter داخل worker.
+///  3. **Back-pressure**: أي فريم يوصل أثناء التحليل بينرمي فوراً،
 ///     فما بيتراكم طابور فريمات ويصير التطبيق "متأخر عن الواقع".
 ///  4. **Frame skipping**: تحليل فريم من كل N (افتراضياً 1 من 3).
 ///  5. **إعادة استخدام كل الـ buffers** (input + output) بدل تخصيص جديد كل فريم.
@@ -52,7 +51,9 @@ const int _kGpuPriorityMinMemoryUsage = 3;
 class TFLiteService {
   // --- الموديل ---
   Interpreter? _interpreter;
-  Uint8List? _modelBuffer;
+  // لازم يظل delegate موجوداً طوال عمر الـ Interpreter. والأهم: نحذفه بعد
+  // إغلاقه إذا رفض الـ GPU الـ graph أو عند إغلاق شاشة الكاميرا.
+  GpuDelegateV2? _gpuDelegate;
   List<String>? _labels;
 
   int _inputWidth = 0;
@@ -62,13 +63,23 @@ class TFLiteService {
   double _inputScale = 1.0;
   int _inputZeroPoint = 0;
   String? _startupError;
+  String? _lastBackendFailure;
+  String _activeBackend = 'unknown';
 
-  // --- الـ isolate الدائم ---
-  Isolate? _isolate;
-  SendPort? _workerPort;
-  ReceivePort? _fromWorker;
-  Completer<Map<String, dynamic>>? _pending;
-  bool _workerReady = false;
+  // سجل قصير يُعرض داخل شاشة الكاميرا نفسها. لا يحتاج Logcat أو USB، ويحفظ
+  // آخر المحاولات فقط حتى لا يغطي معاينة الطريق أو يستهلك الذاكرة.
+  final ValueNotifier<List<String>> _diagnosticEvents =
+      ValueNotifier<List<String>>(const ['AI | Waiting to initialise…']);
+
+  // --- buffers لمسار الـ main isolate، مخصّصة مرة واحدة ---
+  Float32List? _frameFloatBuffer;
+  Uint8List? _frameUint8Buffer;
+  Int32List? _frameXMap;
+  Int32List? _frameYMap;
+  _OutputCache? _frameOutputCache;
+  int _lastFrameSourceWidth = -1;
+  int _lastFrameSourceHeight = -1;
+  bool _isRunningFrameInference = false;
 
   // --- تنظيم معدل الفريمات ---
   int _frameCounter = 0;
@@ -87,9 +98,9 @@ class TFLiteService {
   static const double _iouThreshold = 0.45;
   static const String _modelAsset = 'assets/best_w8a32.tflite';
 
-  bool get isReady =>
-      _startupError == null && _interpreter != null && _workerReady;
+  bool get isReady => _startupError == null && _interpreter != null;
   String? get diagnosticError => _startupError;
+  ValueListenable<List<String>> get diagnosticEvents => _diagnosticEvents;
 
   // ==========================================================================
   // التهيئة
@@ -98,9 +109,14 @@ class TFLiteService {
   Future<void> initializeModel() async {
     if (_interpreter != null) return; // تهيئة مرة وحدة بس
 
+    _addDiagnostic('AI | Loading best_w8a32.tflite…');
     _interpreter = await _loadInterpreterWithBestDelegate();
     if (_interpreter == null) {
-      debugPrint('❌ فشل تحميل الموديل نهائياً (GPU وNNAPI وCPU كلهم فشلوا)');
+      _startupError ??=
+          'Could not run LiteRT model on GPU, NNAPI, or CPU. '
+          '${_lastBackendFailure ?? 'No backend accepted the graph.'}';
+      _addDiagnostic('AI | STARTUP ERROR | $_startupError');
+      debugPrint('❌ $_startupError');
       return;
     }
 
@@ -122,12 +138,6 @@ class TFLiteService {
     _inputScale = inputTensor.params.scale;
     _inputZeroPoint = inputTensor.params.zeroPoint;
     final outputTensor = _interpreter!.getOutputTensor(0);
-    final modelAssetData = await rootBundle.load(_modelAsset);
-    _modelBuffer = modelAssetData.buffer.asUint8List(
-      modelAssetData.offsetInBytes,
-      modelAssetData.lengthInBytes,
-    );
-
     debugPrint(
       '✅ الموديل جاهز | input: ${_inputWidth}x$_inputHeight '
       '| layout: ${_inputChannelsFirst ? 'NCHW' : 'NHWC'} '
@@ -139,151 +149,252 @@ class TFLiteService {
 
     // فحص مبكر ومقروء بدل خطأ عام عند أول frame. تطبيقنا يدعم YOLO RGB
     // بمخرج float إما end-to-end [1,N,6] أو raw [1,C,N].
-    final inputIsSupported = inputShape.length == 4 &&
+    final inputIsSupported =
+        inputShape.length == 4 &&
         inputShape[0] == 1 &&
         (isNhwc || isNchw) &&
         (_inputType == TensorType.float32 || _inputType == TensorType.uint8);
     final outputShape = outputTensor.shape;
     final outputIsEndToEnd =
         outputShape.length == 3 && outputShape[0] == 1 && outputShape[2] == 6;
-    final outputIsRaw = outputShape.length == 3 &&
+    final outputIsRaw =
+        outputShape.length == 3 &&
         outputShape[0] == 1 &&
         outputShape[1] >= 5 &&
         outputShape[2] > 1;
+    final rawClassCount = outputIsRaw ? outputShape[1] - 4 : null;
     if (!inputIsSupported) {
       _startupError =
           'Unsupported model input: shape=$inputShape type=$_inputType. Expected [1,H,W,3] or [1,3,H,W] float32/uint8.';
+    } else if (_labels!.isEmpty) {
+      _startupError = 'classes.txt is empty; YOLO labels are required.';
     } else if (outputTensor.type != TensorType.float32) {
       _startupError =
           'Unsupported model output type: ${outputTensor.type}. This build expects float32 output.';
     } else if (!outputIsEndToEnd && !outputIsRaw) {
       _startupError =
           'Unknown YOLO output shape: $outputShape. Expected [1,N,6] or [1,C,N].';
+    } else if (rawClassCount != null && rawClassCount != _labels!.length) {
+      _startupError =
+          'YOLO model/classes mismatch: raw output has $rawClassCount class(es), '
+          'but assets/classes.txt has ${_labels!.length} label(s): $_labels.';
     }
     if (_startupError != null) {
+      _addDiagnostic('AI | MODEL ERROR | $_startupError');
       debugPrint('❌ $_startupError');
       return;
     }
 
-    try {
-      await _startWorkerIsolate();
-    } catch (e) {
-      _startupError = 'Could not start AI worker: $e';
-      debugPrint('❌ $_startupError');
-    }
+    final totalPixels = _inputWidth * _inputHeight;
+    _frameFloatBuffer = _inputType == TensorType.float32
+        ? Float32List(totalPixels * 3)
+        : null;
+    _frameUint8Buffer = _inputType == TensorType.uint8
+        ? Uint8List(totalPixels * 3)
+        : null;
+    _frameXMap = Int32List(_inputWidth);
+    _frameYMap = Int32List(_inputHeight);
+    _frameOutputCache = _OutputCache();
+    debugPrint(
+      '✅ live inference يعمل على main isolate | backend=$_activeBackend',
+    );
+    _addDiagnostic(
+      'AI | Ready | $_activeBackend | input $inputShape | output $outputShape',
+    );
   }
 
   /// ترتيب المحاولات: GPU (min latency) → NNAPI → CPU متعدد الخيوط.
+  ///
+  /// إنشاء الـ interpreter ليس دليلاً كافياً على أن الـ delegate قادر على
+  /// تنفيذ graph. بعض درايفرات NNAPI تقبل موديل W8A32 عند الإنشاء ثم ترفضه
+  /// فقط عند أول invoke. لذلك نعمل warm-up حقيقي قبل اعتماد أي backend؛ هذا
+  /// يحوّل العطل من خطأ متكرر في الـ live stream إلى fallback آمن للـ CPU.
   Future<Interpreter?> _loadInterpreterWithBestDelegate() async {
+    _lastBackendFailure = null;
+
     // 1) GPU delegate — الأسرع بفارق كبير (بنشمارك: ~4.7ms مقابل ~29ms على CPU)
+    Interpreter? interpreter;
+    GpuDelegateV2? gpuDelegate;
     try {
-      final gpuDelegate = GpuDelegateV2(
-        options: GpuDelegateOptionsV2(
-          // يسمح للـ GPU يشتغل FP16 / يكمّم داخلياً. الموديل أصلاً w8a32
-          // فالفقدان بالدقة مهمل عملياً، والمكسب بالسرعة كبير.
-          isPrecisionLossAllowed: true,
-          inferencePreference: _kGpuUsageFastSingleAnswer,
-          // ⚡ الافتراضي هو MAX_PRECISION — نحن بدنا العكس تماماً.
-          inferencePriority1: _kGpuPriorityMinLatency,
-          inferencePriority2: _kGpuPriorityAuto,
-          inferencePriority3: _kGpuPriorityAuto,
-          // ENABLE_QUANT مفعّل افتراضياً وهو ضروري لموديل w8a32 (تنسورات مكمّمة).
-          maxDelegatePartitions: 1,
-        ),
+      _addDiagnostic('AI | Testing GPU delegate…');
+      final gpuOptions = GpuDelegateOptionsV2(
+        // يسمح للـ GPU يشتغل FP16 / يكمّم داخلياً. الموديل أصلاً w8a32
+        // فالفقدان بالدقة مهمل عملياً، والمكسب بالسرعة كبير.
+        isPrecisionLossAllowed: true,
+        inferencePreference: _kGpuUsageFastSingleAnswer,
+        // ⚡ الافتراضي هو MAX_PRECISION — نحن بدنا العكس تماماً.
+        inferencePriority1: _kGpuPriorityMinLatency,
+        inferencePriority2: _kGpuPriorityAuto,
+        inferencePriority3: _kGpuPriorityAuto,
+        // ENABLE_QUANT مفعّل افتراضياً وهو ضروري لموديل w8a32 (تنسورات مكمّمة).
+        maxDelegatePartitions: 1,
       );
+      try {
+        gpuDelegate = GpuDelegateV2(options: gpuOptions);
+      } finally {
+        gpuOptions.delete();
+      }
       final options = InterpreterOptions()..addDelegate(gpuDelegate);
-      final interpreter =
-          await Interpreter.fromAsset(_modelAsset, options: options);
-      debugPrint('✅ GPU delegate اشتغل (أولوية: أقل زمن استجابة)');
+      try {
+        interpreter = await Interpreter.fromAsset(
+          _modelAsset,
+          options: options,
+        );
+      } finally {
+        options.delete();
+      }
+      _verifyInterpreterCanInvoke(interpreter);
+      _gpuDelegate = gpuDelegate;
+      _activeBackend = 'GPU';
+      debugPrint('✅ GPU delegate اجتاز warm-up (أولوية: أقل زمن استجابة)');
+      _addDiagnostic('AI | GPU ready');
       return interpreter;
     } catch (e) {
-      debugPrint('⚠️ GPU delegate فشل ($e) — جرّب NNAPI...');
+      interpreter?.close();
+      gpuDelegate?.delete();
+      _recordBackendFailure('GPU', e);
+      debugPrint('⚠️ GPU رفض graph — جرّب NNAPI...');
     }
 
     // 2) NNAPI — بيستغل أي مسرّع بالشريحة (NPU/DSP/GPU)
+    interpreter = null;
     try {
+      _addDiagnostic('AI | Testing NNAPI delegate…');
       final options = InterpreterOptions()..useNnApiForAndroid = true;
-      final interpreter =
-          await Interpreter.fromAsset(_modelAsset, options: options);
-      debugPrint('✅ NNAPI delegate اشتغل');
+      try {
+        interpreter = await Interpreter.fromAsset(
+          _modelAsset,
+          options: options,
+        );
+      } finally {
+        options.delete();
+      }
+      _verifyInterpreterCanInvoke(interpreter);
+      _activeBackend = 'NNAPI';
+      debugPrint('✅ NNAPI delegate اجتاز warm-up');
+      _addDiagnostic('AI | NNAPI ready');
       return interpreter;
     } catch (e) {
-      debugPrint('⚠️ NNAPI فشل ($e) — رجوع لـ CPU...');
+      interpreter?.close();
+      _recordBackendFailure('NNAPI', e);
+      debugPrint('⚠️ NNAPI رفض graph — رجوع لـ CPU...');
     }
 
-    // 3) CPU (XNNPACK) — آخر حل، بعدد خيوط = أنوية الجهاز (بحد أقصى 4)
+    return _loadCpuInterpreter();
+  }
+
+  /// CPU/XNNPACK هو المسار المرجعي الذي يدعم الموديل حتى لو درايفر NNAPI
+  /// الخاص بالجهاز لا يدعم W8A32 أو أحد operators المصدّرة من YOLO.
+  Future<Interpreter?> _loadCpuInterpreter() async {
+    Interpreter? interpreter;
     try {
       final cores = Platform.numberOfProcessors;
       final threads = cores > 4 ? 4 : (cores < 1 ? 1 : cores);
       final options = InterpreterOptions()..threads = threads;
       debugPrint('ℹ️ CPU fallback بـ $threads خيوط');
-      return await Interpreter.fromAsset(_modelAsset, options: options);
+      _addDiagnostic('AI | Testing CPU/XNNPACK ($threads threads)…');
+      try {
+        interpreter = await Interpreter.fromAsset(
+          _modelAsset,
+          options: options,
+        );
+      } finally {
+        options.delete();
+      }
+      _verifyInterpreterCanInvoke(interpreter);
+      _activeBackend = 'CPU/XNNPACK ($threads threads)';
+      debugPrint('✅ CPU/XNNPACK اجتاز warm-up');
+      _addDiagnostic('AI | CPU/XNNPACK ready');
+      return interpreter;
     } catch (e) {
-      debugPrint('❌ حتى CPU فشل: $e');
+      interpreter?.close();
+      _recordBackendFailure('CPU/XNNPACK', e);
+      debugPrint('❌ حتى CPU رفض graph: $e');
       return null;
     }
   }
 
-  /// يُنشئ الـ isolate الدائم ويسلّمه bytes النموذج + أبعاد الإدخال.
-  Future<void> _startWorkerIsolate() async {
-    _fromWorker = ReceivePort();
+  /// لا نكتفي بـ [Interpreter.fromAsset]: ننسخ input صفر بطول tensor الحقيقي
+  /// ونستدعي graph. الـ bytes الصفرية صالحة لكل الأنواع المدعومة، والهدف هنا
+  /// اختبار توافق الـ backend فقط وليس التنبؤ بصوره حقيقية.
+  static void _verifyInterpreterCanInvoke(Interpreter interpreter) {
+    final input = interpreter.getInputTensor(0);
+    input.setTo(Uint8List(input.numBytes()));
+    interpreter.invoke();
+  }
 
-    _isolate = await Isolate.spawn(
-      _workerEntry,
-      _WorkerInit(
-        mainPort: _fromWorker!.sendPort,
-        modelBuffer: _modelBuffer!,
-        inputWidth: _inputWidth,
-        inputHeight: _inputHeight,
-        inputChannelsFirst: _inputChannelsFirst,
-        inputTypeIndex: _inputType.index,
-        inputScale: _inputScale,
-        inputZeroPoint: _inputZeroPoint,
-        labels: _labels!,
-        confThreshold: _confThreshold,
-        iouThreshold: _iouThreshold,
-      ),
-      debugName: 'rased_tflite_worker',
+  void _recordBackendFailure(String backend, Object error) {
+    _lastBackendFailure = '$backend warm-up failed: $error';
+    _addDiagnostic('AI | $backend rejected graph | ${_shortError(error)}');
+    debugPrint('⚠️ $_lastBackendFailure');
+  }
+
+  void _addDiagnostic(String event) {
+    const maxEvents = 5;
+    final next = <String>[..._diagnosticEvents.value, event];
+    if (next.length > maxEvents) {
+      next.removeRange(0, next.length - maxEvents);
+    }
+    _diagnosticEvents.value = List<String>.unmodifiable(next);
+  }
+
+  static String _shortError(Object error) {
+    final singleLine = error.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+    return singleLine.length <= 96
+        ? singleLine
+        : '${singleLine.substring(0, 93)}…';
+  }
+
+  bool get _isAcceleratedBackend =>
+      _activeBackend == 'GPU' || _activeBackend == 'NNAPI';
+
+  /// حماية إضافية: إذا درايفر المسرّع انهار بعد warm-up، أعد إنشاء interpreter
+  /// على CPU وأعد تجربة الفريم نفسه مرة واحدة بدل عرض الخطأ بكل فريم.
+  Future<void> _fallbackToCpuAfterInvokeFailure(Object cause) async {
+    final failedBackend = _activeBackend;
+    debugPrint(
+      '⚠️ $failedBackend invoke فشل بعد warm-up ($cause) — التحويل إلى CPU...',
+    );
+    _addDiagnostic(
+      'AI | $failedBackend invoke failed | Switching to CPU/XNNPACK…',
     );
 
-    final ready = Completer<void>();
+    final oldInterpreter = _interpreter;
+    final oldGpuDelegate = _gpuDelegate;
+    _interpreter = null;
+    _gpuDelegate = null;
+    _activeBackend = 'unknown';
+    oldInterpreter?.close();
+    oldGpuDelegate?.delete();
 
-    _fromWorker!.listen((message) {
-      if (message is SendPort) {
-        _workerPort = message;
-        _workerReady = true;
-        if (!ready.isCompleted) ready.complete();
-        debugPrint('✅ isolate الاستنتاج الدائم جاهز');
-      } else if (message is Map<String, dynamic>) {
-        final error = message['error'];
-        if (error != null) {
-          debugPrint('❌ فشل worker الاستنتاج: $error');
-        }
-        final p = _pending;
-        _pending = null;
-        if (p != null && !p.isCompleted) p.complete(message);
-      }
-    });
-
-    await ready.future.timeout(
-      const Duration(seconds: 5),
-      onTimeout: () => throw TimeoutException('AI worker did not become ready'),
-    );
+    final cpuInterpreter = await _loadCpuInterpreter();
+    if (cpuInterpreter == null) {
+      throw StateError(
+        'CPU fallback failed after $failedBackend: '
+        '${_lastBackendFailure ?? cause}',
+      );
+    }
+    _interpreter = cpuInterpreter;
+    _frameOutputCache = _OutputCache();
   }
 
   void dispose() {
-    _workerPort?.send('close');
-    _isolate?.kill(priority: Isolate.immediate);
-    _isolate = null;
-    _fromWorker?.close();
-    _fromWorker = null;
-    _workerPort = null;
-    _workerReady = false;
-    _pending = null;
     _interpreter?.close();
+    _gpuDelegate?.delete();
     _interpreter = null;
-    _modelBuffer = null;
+    _gpuDelegate = null;
+    _frameFloatBuffer = null;
+    _frameUint8Buffer = null;
+    _frameXMap = null;
+    _frameYMap = null;
+    _frameOutputCache = null;
+    _lastFrameSourceWidth = -1;
+    _lastFrameSourceHeight = -1;
+    _isRunningFrameInference = false;
+    _activeBackend = 'unknown';
+    _lastBackendFailure = null;
     _startupError = null;
+    _diagnosticEvents.dispose();
   }
 
   // ==========================================================================
@@ -294,56 +405,134 @@ class TFLiteService {
   ///
   /// ⚠️ يرجّع **null** (مش نتيجة فاضية) إذا:
   ///  - الفريم ضمن الفريمات المتخطّاة (frame skipping)، أو
-  ///  - الـ worker لسا مشغول بفريم سابق (back-pressure).
+  ///  - التحليل السابق ما زال مشغولاً (back-pressure).
   ///
   /// التمييز بين null و'Clear Road' حرج: بدونه الفريم المتخطّى بينقرأ كأنه
   /// "طريق نظيف" فبيمسح المربعات من الشاشة ويصفّر عدّاد التأكيد الزمني.
   Future<Map<String, dynamic>?> predictFrameWithBoxes(
-      CameraImage cameraImage) async {
+    CameraImage cameraImage,
+  ) async {
     if (!isReady) return null;
 
     // 1) تخطي فريمات
     _frameCounter++;
     if (frameSkipRate > 1 && _frameCounter % frameSkipRate != 0) return null;
 
-    // 2) رمي الفريم لو الـ worker مشغول (لا طابور، لا تأخير تراكمي)
-    if (_pending != null) return null;
+    // 2) رمي الفريم لو التحليل مشغول (لا طابور، لا تأخير تراكمي).
+    if (_isRunningFrameInference) return null;
 
+    var stage = 'build camera frame';
     try {
-      final completer = Completer<Map<String, dynamic>>();
-      _pending = completer;
-
-      _workerPort!.send(_FramePayload(
+      _isRunningFrameInference = true;
+      final frame = _FramePayload(
         isYuv: cameraImage.format.group == ImageFormatGroup.yuv420,
         width: cameraImage.width,
         height: cameraImage.height,
         plane0: cameraImage.planes[0].bytes,
-        plane1:
-            cameraImage.planes.length > 1 ? cameraImage.planes[1].bytes : null,
-        plane2:
-            cameraImage.planes.length > 2 ? cameraImage.planes[2].bytes : null,
+        plane1: cameraImage.planes.length > 1
+            ? cameraImage.planes[1].bytes
+            : null,
+        plane2: cameraImage.planes.length > 2
+            ? cameraImage.planes[2].bytes
+            : null,
         yRowStride: cameraImage.planes[0].bytesPerRow,
-        uvRowStride:
-            cameraImage.planes.length > 1 ? cameraImage.planes[1].bytesPerRow : 0,
+        uvRowStride: cameraImage.planes.length > 1
+            ? cameraImage.planes[1].bytesPerRow
+            : 0,
         uvPixelStride: cameraImage.planes.length > 1
             ? (cameraImage.planes[1].bytesPerPixel ?? 1)
             : 1,
-      ));
-
-      // حماية من التعليق لو صار خطأ غير متوقع جوا الـ worker
-      return await completer.future.timeout(
-        const Duration(seconds: 2),
-        onTimeout: () {
-          _pending = null;
-          debugPrint('⚠️ انتهت مهلة الفريم — تم تجاهله');
-          return _empty;
-        },
       );
-    } catch (e) {
-      _pending = null;
-      debugPrint('❌ خطأ بإرسال الفريم: $e');
-      return null;
+
+      stage = 'letterbox mapping';
+      _updateFrameLetterboxMaps(frame);
+      stage = 'YUV/BGRA → RGB input buffer';
+      _fillInputBuffer(
+        frame: frame,
+        inputWidth: _inputWidth,
+        inputHeight: _inputHeight,
+        xMap: _frameXMap!,
+        yMap: _frameYMap!,
+        floatBuf: _frameFloatBuffer,
+        uint8Buf: _frameUint8Buffer,
+        channelsFirst: _inputChannelsFirst,
+        inputScale: _inputScale,
+        inputZeroPoint: _inputZeroPoint,
+      );
+      stage = 'LiteRT inference';
+      return _runInference(
+        interpreter: _interpreter!,
+        inputBuffer: (_frameFloatBuffer ?? _frameUint8Buffer)!,
+        labels: _labels!,
+        confThreshold: _confThreshold,
+        iouThreshold: _iouThreshold,
+        cache: _frameOutputCache,
+      );
+    } catch (e, stack) {
+      Object error = e;
+      StackTrace errorStack = stack;
+      if (error is _InferenceStageException &&
+          error.stage == 'invoke LiteRT graph' &&
+          _isAcceleratedBackend) {
+        try {
+          await _fallbackToCpuAfterInvokeFailure(error.cause);
+          return _runInference(
+            interpreter: _interpreter!,
+            inputBuffer: (_frameFloatBuffer ?? _frameUint8Buffer)!,
+            labels: _labels!,
+            confThreshold: _confThreshold,
+            iouThreshold: _iouThreshold,
+            cache: _frameOutputCache,
+          );
+        } catch (fallbackError, fallbackStack) {
+          error = _InferenceStageException(
+            'CPU fallback after accelerated invoke',
+            '$fallbackError\n$fallbackStack',
+          );
+          errorStack = fallbackStack;
+        }
+      }
+      final detail = error is _InferenceStageException
+          ? error.message
+          : '$stage: $error';
+      debugPrint('❌ AI error | backend=$_activeBackend | $detail');
+      _addDiagnostic('AI | ERROR | $_activeBackend | ${_shortError(detail)}');
+      return {
+        ..._empty,
+        'maxScore': 0.0,
+        'error': 'backend=$_activeBackend | $detail\n$errorStack',
+      };
+    } finally {
+      _isRunningFrameInference = false;
     }
+  }
+
+  /// يحدث خرائط letterbox فقط عندما تتغير أبعاد صورة الكاميرا.
+  void _updateFrameLetterboxMaps(_FramePayload frame) {
+    if (frame.width == _lastFrameSourceWidth &&
+        frame.height == _lastFrameSourceHeight) {
+      return;
+    }
+
+    final resizeScale =
+        (_inputWidth / frame.width) < (_inputHeight / frame.height)
+        ? (_inputWidth / frame.width)
+        : (_inputHeight / frame.height);
+    final resizedW = (frame.width * resizeScale).round();
+    final resizedH = (frame.height * resizeScale).round();
+    final padX = (_inputWidth - resizedW) ~/ 2;
+    final padY = (_inputHeight - resizedH) ~/ 2;
+
+    for (int tx = 0; tx < _inputWidth; tx++) {
+      final sourceX = ((tx - padX) / resizeScale).floor();
+      _frameXMap![tx] = sourceX < 0 || sourceX >= frame.width ? -1 : sourceX;
+    }
+    for (int ty = 0; ty < _inputHeight; ty++) {
+      final sourceY = ((ty - padY) / resizeScale).floor();
+      _frameYMap![ty] = sourceY < 0 || sourceY >= frame.height ? -1 : sourceY;
+    }
+    _lastFrameSourceWidth = frame.width;
+    _lastFrameSourceHeight = frame.height;
   }
 
   /// توافق خلفي مع أي كود قديم بيتوقع String بس.
@@ -369,7 +558,8 @@ class TFLiteService {
 
       // نفس letterbox المستخدم في مسار الكاميرا وتدريب YOLO: لا نمدّ
       // الحفرة أفقياً/عمودياً إلى مربع لأن ذلك يغيّر شكلها وثقتها.
-      final scale = (_inputWidth / decoded.width) < (_inputHeight / decoded.height)
+      final scale =
+          (_inputWidth / decoded.width) < (_inputHeight / decoded.height)
           ? (_inputWidth / decoded.width)
           : (_inputHeight / decoded.height);
       final resizedW = (decoded.width * scale).round();
@@ -390,7 +580,11 @@ class TFLiteService {
         final f = Float32List(totalPixels * 3);
         for (int y = 0; y < _inputHeight; y++) {
           for (int x = 0; x < _inputWidth; x++) {
-            final inImage = x >= padX && x < padX + resizedW && y >= padY && y < padY + resizedH;
+            final inImage =
+                x >= padX &&
+                x < padX + resizedW &&
+                y >= padY &&
+                y < padY + resizedH;
             final p = inImage ? source.getPixel(x - padX, y - padY) : null;
             final pixel = y * _inputWidth + x;
             final base = _inputChannelsFirst ? pixel : pixel * 3;
@@ -407,16 +601,25 @@ class TFLiteService {
         final scale = _inputScale == 0 ? 1.0 : _inputScale;
         for (int y = 0; y < _inputHeight; y++) {
           for (int x = 0; x < _inputWidth; x++) {
-            final inImage = x >= padX && x < padX + resizedW && y >= padY && y < padY + resizedH;
+            final inImage =
+                x >= padX &&
+                x < padX + resizedW &&
+                y >= padY &&
+                y < padY + resizedH;
             final p = inImage ? source.getPixel(x - padX, y - padY) : null;
             final pixel = y * _inputWidth + x;
             final base = _inputChannelsFirst ? pixel : pixel * 3;
-            u[base] =
-                (((p?.r ?? 114) / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
+            u[base] = (((p?.r ?? 114) / 255.0) / scale + _inputZeroPoint)
+                .round()
+                .clamp(0, 255);
             u[_inputChannelsFirst ? totalPixels + pixel : base + 1] =
-                (((p?.g ?? 114) / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
+                (((p?.g ?? 114) / 255.0) / scale + _inputZeroPoint)
+                    .round()
+                    .clamp(0, 255);
             u[_inputChannelsFirst ? totalPixels * 2 + pixel : base + 2] =
-                (((p?.b ?? 114) / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
+                (((p?.b ?? 114) / 255.0) / scale + _inputZeroPoint)
+                    .round()
+                    .clamp(0, 255);
           }
         }
         buffer = u;
@@ -436,110 +639,10 @@ class TFLiteService {
     }
   }
 
-  static Map<String, dynamic> get _empty =>
-      {'label': 'Clear Road', 'detections': const <Map<String, dynamic>>[]};
-
-  // ==========================================================================
-  // الـ WORKER ISOLATE
-  // ==========================================================================
-
-  static void _workerEntry(_WorkerInit init) {
-    final rp = ReceivePort();
-    init.mainPort.send(rp.sendPort);
-
-    // لا نمرّر عنوان interpreter الأصلي إلى isolate آخر. الـ GPU/NNAPI
-    // delegate مربوط بسياق الـisolate الذي أُنشئ فيه، وهذا هو سبب
-    // "Bad state: failed precondition" على بعض الهواتف. ننشئ interpreter
-    // مستقلاً من bytes النموذج داخل worker؛ بذلك يشتغل CPU/XNNPACK بثبات.
-    final workerOptions = InterpreterOptions()..threads = 4;
-    final interpreter = Interpreter.fromBuffer(
-      init.modelBuffer,
-      options: workerOptions,
-    );
-    final inputType = TensorType.values[init.inputTypeIndex];
-    final w = init.inputWidth;
-    final h = init.inputHeight;
-    final channelsFirst = init.inputChannelsFirst;
-    final totalPixels = w * h;
-
-    // ── تخصيص مرة واحدة فقط (بدل كل فريم) ────────────────────────────────
-    final Float32List? floatBuf =
-        inputType == TensorType.float32 ? Float32List(totalPixels * 3) : null;
-    final Uint8List? uint8Buf =
-        inputType != TensorType.float32 ? Uint8List(totalPixels * 3) : null;
-
-    // جداول بحث للإحداثيات: بتلغي عمليتي قسمة integer لكل بكسل داخل اللوب.
-    final xMap = Int32List(w);
-    final yMap = Int32List(h);
-
-    final cache = _OutputCache(interpreter);
-
-    int lastSrcW = -1, lastSrcH = -1;
-
-    rp.listen((message) {
-      if (message == 'close') {
-        rp.close();
-        return;
-      }
-      if (message is! _FramePayload) return;
-
-      try {
-        final f = message;
-
-        // Letterbox مطابق لـ YOLO: احتفظ بنسبة الأبعاد واملأ الحواف بـ114.
-        // القيمة -1 في الخريطة تعني padding وليست بكسلاً من الكاميرا.
-        if (f.width != lastSrcW || f.height != lastSrcH) {
-          final resizeScale = (w / f.width) < (h / f.height)
-              ? (w / f.width)
-              : (h / f.height);
-          final resizedW = (f.width * resizeScale).round();
-          final resizedH = (f.height * resizeScale).round();
-          final padX = (w - resizedW) ~/ 2;
-          final padY = (h - resizedH) ~/ 2;
-          for (int tx = 0; tx < w; tx++) {
-            final v = ((tx - padX) / resizeScale).floor();
-            xMap[tx] = v < 0 || v >= f.width ? -1 : v;
-          }
-          for (int ty = 0; ty < h; ty++) {
-            final v = ((ty - padY) / resizeScale).floor();
-            yMap[ty] = v < 0 || v >= f.height ? -1 : v;
-          }
-          lastSrcW = f.width;
-          lastSrcH = f.height;
-        }
-
-        _fillInputBuffer(
-          frame: f,
-          inputWidth: w,
-          inputHeight: h,
-          xMap: xMap,
-          yMap: yMap,
-          floatBuf: floatBuf,
-          uint8Buf: uint8Buf,
-          channelsFirst: channelsFirst,
-          inputScale: init.inputScale,
-          inputZeroPoint: init.inputZeroPoint,
-        );
-
-        final result = _runInference(
-          interpreter: interpreter,
-          inputBuffer: (floatBuf ?? uint8Buf)!,
-          labels: init.labels,
-          confThreshold: init.confThreshold,
-          iouThreshold: init.iouThreshold,
-          cache: cache,
-        );
-
-        init.mainPort.send(result);
-      } catch (e, stack) {
-        init.mainPort.send({
-          'label': 'Clear Road',
-          'detections': <Map<String, dynamic>>[],
-          'error': '$e\n$stack',
-        });
-      }
-    });
-  }
+  static Map<String, dynamic> get _empty => {
+    'label': 'Clear Road',
+    'detections': const <Map<String, dynamic>>[],
+  };
 
   /// يعبّي الـ buffer الجاهز مباشرة من بيانات الكاميرا الخام.
   /// تحويل اللون + التصغير بمرور واحد، بدون أي تخصيص ذاكرة جديد.
@@ -566,7 +669,7 @@ class TFLiteService {
     void writePixel(int r, int g, int b) {
       final base = channelsFirst ? pixel : pixel * 3;
       if (isFloat) {
-        floatBuf![base] = r * 0.00392156862745098;
+        floatBuf[base] = r * 0.00392156862745098;
         floatBuf[channelsFirst ? totalPixels + pixel : base + 1] =
             g * 0.00392156862745098;
         floatBuf[channelsFirst ? totalPixels * 2 + pixel : base + 2] =
@@ -585,7 +688,9 @@ class TFLiteService {
       final p0 = frame.plane0;
       final p1 = frame.plane1;
       final p2 = frame.plane2;
-      if (p1 == null || p2 == null) throw Exception('YUV420 بدون chroma planes');
+      if (p1 == null || p2 == null) {
+        throw Exception('YUV420 بدون chroma planes');
+      }
 
       final yStride = frame.yRowStride;
       final uvStride = frame.uvRowStride;
@@ -644,8 +749,8 @@ class TFLiteService {
   // ==========================================================================
 
   /// يقرر تلقائياً شكل الـ output:
-  ///  - `(1, 300, 6)` end-to-end → قراءة مباشرة، بدون NMS يدوي (المتوقع من w8a32)
-  ///  - أي شكل تاني `(1, nc+4, N)` → فك تشفير + NMS يدوي (مسار احتياطي لـ INT8)
+  ///  - `(1, 300, 6)` end-to-end من export بـ `nms=True` → قراءة مباشرة.
+  ///  - `(1, nc+4, N)` من export بـ `nms=False` → فك تشفير + NMS يدوي.
   static Map<String, dynamic> _runInference({
     required Interpreter interpreter,
     required TypedData inputBuffer,
@@ -654,25 +759,67 @@ class TFLiteService {
     required double iouThreshold,
     required _OutputCache? cache,
   }) {
-    final outputShape = interpreter.getOutputTensor(0).shape;
+    late final List<int> outputShape;
+    try {
+      outputShape = interpreter.getOutputTensor(0).shape;
+    } catch (e) {
+      throw _InferenceStageException('read output tensor metadata', e);
+    }
     final isEndToEnd = outputShape.length == 3 && outputShape[2] == 6;
+
+    // tflite_flutter يعامل Float32List كـ List ذات بُعد واحد ويعيد تحجيم
+    // الإدخال إلى [1228800]. تمرير ByteBuffer يمنع هذا الـ resize الخاطئ
+    // ويحافظ على [1,3,640,640] / [1,640,640,3] الفعلي للموديل.
+    final ByteBuffer modelInput = inputBuffer.buffer;
+    try {
+      interpreter.getInputTensor(0).setTo(modelInput);
+    } catch (e) {
+      throw _InferenceStageException('copy input to tensor', e);
+    }
+
+    try {
+      interpreter.invoke();
+    } catch (e) {
+      throw _InferenceStageException('invoke LiteRT graph', e);
+    }
 
     if (isEndToEnd) {
       final out = cache?.endToEnd(outputShape) ?? _allocEndToEnd(outputShape);
-      interpreter.run([inputBuffer], out);
-      return _parseEndToEnd(out[0], labels, confThreshold);
+      try {
+        interpreter.getOutputTensor(0).copyTo(out);
+      } catch (e) {
+        throw _InferenceStageException('copy output tensor', e);
+      }
+      try {
+        return _parseEndToEnd(out[0], labels, confThreshold);
+      } catch (e) {
+        throw _InferenceStageException('parse end-to-end output', e);
+      }
     } else {
       final out = cache?.raw(outputShape) ?? _allocRaw(outputShape);
-      interpreter.run([inputBuffer], out);
-      return _parseRawWithNMS(out[0], labels, confThreshold, iouThreshold);
+      try {
+        interpreter.getOutputTensor(0).copyTo(out);
+      } catch (e) {
+        throw _InferenceStageException('copy output tensor', e);
+      }
+      try {
+        return _parseRawWithNMS(out[0], labels, confThreshold, iouThreshold);
+      } catch (e) {
+        throw _InferenceStageException('parse raw output + NMS', e);
+      }
     }
   }
 
   static List<List<List<double>>> _allocEndToEnd(List<int> shape) =>
-      List.generate(1, (_) => List.generate(shape[1], (_) => List.filled(6, 0.0)));
+      List.generate(
+        1,
+        (_) => List.generate(shape[1], (_) => List.filled(6, 0.0)),
+      );
 
   static List<List<List<double>>> _allocRaw(List<int> shape) => List.generate(
-      1, (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+    1,
+    (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)),
+  );
 
   /// `(1, 300, 6)` → [x1, y1, x2, y2, conf, class_id] بإحداثيات مطبّعة 0-1.
   static Map<String, dynamic> _parseEndToEnd(
@@ -695,9 +842,12 @@ class TFLiteService {
           : 'Class $classId';
 
       final coordinateScale =
-          (row[0].abs() > 2 || row[1].abs() > 2 || row[2].abs() > 2 || row[3].abs() > 2)
-              ? 640.0
-              : 1.0;
+          (row[0].abs() > 2 ||
+              row[1].abs() > 2 ||
+              row[2].abs() > 2 ||
+              row[3].abs() > 2)
+          ? 640.0
+          : 1.0;
       detections.add({
         'x1': (row[0] / coordinateScale).clamp(0.0, 1.0),
         'y1': (row[1] / coordinateScale).clamp(0.0, 1.0),
@@ -713,11 +863,7 @@ class TFLiteService {
       }
     }
 
-    return {
-      'label': bestLabel,
-      'detections': detections,
-      'maxScore': maxScore,
-    };
+    return {'label': bestLabel, 'detections': detections, 'maxScore': maxScore};
   }
 
   /// `(1, nc+4, N)` → كل عمود صندوق مرشّح [cx, cy, w, h, scores...] + NMS يدوي.
@@ -752,7 +898,8 @@ class TFLiteService {
 
       // بعض صادرات LiteRT تعيد الإحداثيات بوحدة بكسل 640، وبعضها
       // يعيدها مطبّعة. لا نقصّها إلى 1 قبل تحويلها وإلا يصبح كل box شاشة كاملة.
-      final coordinateScale = (cx.abs() > 2 || cy.abs() > 2 || bw.abs() > 2 || bh.abs() > 2)
+      final coordinateScale =
+          (cx.abs() > 2 || cy.abs() > 2 || bw.abs() > 2 || bh.abs() > 2)
           ? 640.0
           : 1.0;
       candidates.add([
@@ -805,11 +952,7 @@ class TFLiteService {
       }
     }
 
-    return {
-      'label': bestLabel,
-      'detections': detections,
-      'maxScore': maxScore,
-    };
+    return {'label': bestLabel, 'detections': detections, 'maxScore': maxScore};
   }
 
   static double _iou(List<double> a, List<double> b) {
@@ -832,10 +975,6 @@ class TFLiteService {
 
 /// يحتفظ بـ output buffers مخصّصة مرة وحدة ويعيد استخدامها كل فريم.
 class _OutputCache {
-  _OutputCache(this._interpreter);
-  // ignore: unused_field
-  final Interpreter _interpreter;
-
   List<List<List<double>>>? _endToEnd;
   List<List<List<double>>>? _raw;
 
@@ -846,36 +985,20 @@ class _OutputCache {
       _raw ??= TFLiteService._allocRaw(shape);
 }
 
-/// بيانات التهيئة المُرسلة للـ isolate مرة واحدة عند الإنشاء.
-class _WorkerInit {
-  const _WorkerInit({
-    required this.mainPort,
-    required this.modelBuffer,
-    required this.inputWidth,
-    required this.inputHeight,
-    required this.inputChannelsFirst,
-    required this.inputTypeIndex,
-    required this.inputScale,
-    required this.inputZeroPoint,
-    required this.labels,
-    required this.confThreshold,
-    required this.iouThreshold,
-  });
+/// يربط خطأ LiteRT بمرحلة محددة ليظهر في لوحة تشخيص الكاميرا.
+class _InferenceStageException implements Exception {
+  _InferenceStageException(this.stage, this.cause);
 
-  final SendPort mainPort;
-  final Uint8List modelBuffer;
-  final int inputWidth;
-  final int inputHeight;
-  final bool inputChannelsFirst;
-  final int inputTypeIndex;
-  final double inputScale;
-  final int inputZeroPoint;
-  final List<String> labels;
-  final double confThreshold;
-  final double iouThreshold;
+  final String stage;
+  final Object cause;
+
+  String get message => '$stage: $cause';
+
+  @override
+  String toString() => message;
 }
 
-/// حمولة فريم واحد مُرسلة للـ isolate.
+/// حمولة فريم واحد تُعالج مباشرة على الـ main isolate.
 class _FramePayload {
   const _FramePayload({
     required this.isYuv,
