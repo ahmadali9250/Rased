@@ -60,6 +60,7 @@ class TFLiteService {
   TensorType _inputType = TensorType.float32;
   double _inputScale = 1.0;
   int _inputZeroPoint = 0;
+  String? _startupError;
 
   // --- الـ isolate الدائم ---
   Isolate? _isolate;
@@ -85,7 +86,9 @@ class TFLiteService {
   static const double _iouThreshold = 0.45;
   static const String _modelAsset = 'assets/best_w8a32.tflite';
 
-  bool get isReady => _interpreter != null && _workerReady;
+  bool get isReady =>
+      _startupError == null && _interpreter != null && _workerReady;
+  String? get diagnosticError => _startupError;
 
   // ==========================================================================
   // التهيئة
@@ -129,7 +132,40 @@ class TFLiteService {
       '| labels: $_labels',
     );
 
-    await _startWorkerIsolate();
+    // فحص مبكر ومقروء بدل خطأ عام عند أول frame. تطبيقنا يدعم YOLO RGB
+    // بمخرج float إما end-to-end [1,N,6] أو raw [1,C,N].
+    final inputIsSupported = inputShape.length == 4 &&
+        inputShape[0] == 1 &&
+        inputShape[3] == 3 &&
+        (_inputType == TensorType.float32 || _inputType == TensorType.uint8);
+    final outputShape = outputTensor.shape;
+    final outputIsEndToEnd =
+        outputShape.length == 3 && outputShape[0] == 1 && outputShape[2] == 6;
+    final outputIsRaw = outputShape.length == 3 &&
+        outputShape[0] == 1 &&
+        outputShape[1] >= 5 &&
+        outputShape[2] > 1;
+    if (!inputIsSupported) {
+      _startupError =
+          'Unsupported model input: shape=$inputShape type=$_inputType. Expected [1,H,W,3] float32/uint8.';
+    } else if (outputTensor.type != TensorType.float32) {
+      _startupError =
+          'Unsupported model output type: ${outputTensor.type}. This build expects float32 output.';
+    } else if (!outputIsEndToEnd && !outputIsRaw) {
+      _startupError =
+          'Unknown YOLO output shape: $outputShape. Expected [1,N,6] or [1,C,N].';
+    }
+    if (_startupError != null) {
+      debugPrint('❌ $_startupError');
+      return;
+    }
+
+    try {
+      await _startWorkerIsolate();
+    } catch (e) {
+      _startupError = 'Could not start AI worker: $e';
+      debugPrint('❌ $_startupError');
+    }
   }
 
   /// ترتيب المحاولات: GPU (min latency) → NNAPI → CPU متعدد الخيوط.
@@ -223,7 +259,10 @@ class TFLiteService {
       }
     });
 
-    await ready.future;
+    await ready.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => throw TimeoutException('AI worker did not become ready'),
+    );
   }
 
   void dispose() {
@@ -238,6 +277,7 @@ class TFLiteService {
     _interpreter?.close();
     _interpreter = null;
     _modelBuffer = null;
+    _startupError = null;
   }
 
   // ==========================================================================

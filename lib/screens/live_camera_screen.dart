@@ -135,6 +135,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
 
   Future<void> _initializeCameraAndAI() async {
     await _tfliteService.initializeModel();
+    final aiStartupError = _tfliteService.diagnosticError;
+    if (aiStartupError != null) {
+      _diagnostics.value = 'AI ERROR: $aiStartupError';
+    }
 
     final cameras = await availableCameras();
     if (cameras.isEmpty) return;
