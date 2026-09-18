@@ -34,6 +34,9 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
       ValueNotifier<List<Map<String, dynamic>>>(const []);
   final ValueNotifier<String> _prediction =
       ValueNotifier<String>('Scanning road...');
+  // لوحة تشخيص مؤقتة للاختبار الميداني؛ لا تعتمد على logcat أو USB.
+  final ValueNotifier<String> _diagnostics =
+      ValueNotifier<String>('AI: waiting for first frame…');
 
   bool _isProcessingFrame = false;
   int _lastFrameTime = 0;
@@ -193,13 +196,18 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
         // المربعات بترفرف والعدّاد الزمني بيتصفّر كل فريم.
         if (result == null) return;
 
+        final maxScore = (result['maxScore'] as num?)?.toDouble() ?? 0.0;
+        final count = (result['detections'] as List?)?.length ?? 0;
+        final workerError = result['error']?.toString();
+        _diagnostics.value = workerError == null
+            ? 'AI  score: ${maxScore.toStringAsFixed(3)}  |  boxes: $count  |  ${image.width}×${image.height}'
+            : 'AI ERROR: ${workerError.split('\n').first}';
+
         // سجل ميداني محدود: يكشف فوراً إن المشكلة عتبة ثقة أم خطأ worker
         // من دون إغراق logcat بسجل لكل فريم.
         final now = DateTime.now().millisecondsSinceEpoch;
         if (now - _lastDiagnosticLogTime >= 2000) {
           _lastDiagnosticLogTime = now;
-          final maxScore = (result['maxScore'] as num?)?.toDouble() ?? 0.0;
-          final count = (result['detections'] as List?)?.length ?? 0;
           debugPrint(
             '🔎 AI diagnostics | maxScore=${maxScore.toStringAsFixed(3)} '
             '| detections=$count | frame=${image.width}x${image.height}',
@@ -444,6 +452,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     _tfliteService.dispose();
     _detections.dispose();
     _prediction.dispose();
+    _diagnostics.dispose();
     super.dispose();
   }
 
@@ -506,7 +515,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
               ),
             ),
 
-          _buildTopBar(isArabic),
+           _buildTopBar(isArabic),
+           _buildDiagnosticsPanel(),
 
           if (_isUploadingReport)
             Positioned(
@@ -604,6 +614,41 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
               ),
             const SizedBox(width: 48),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// ظاهرة فقط في هذه المرحلة لتشخيص الهاتف مباشرة. تحذف لاحقاً بإزالة
+  /// `_buildDiagnosticsPanel()` والـ ValueNotifier الخاص بها.
+  Widget _buildDiagnosticsPanel() {
+    return Positioned(
+      top: 126,
+      left: 16,
+      right: 16,
+      child: ValueListenableBuilder<String>(
+        valueListenable: _diagnostics,
+        builder: (_, text, __) => Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: text.startsWith('AI ERROR')
+                ? Colors.red.withValues(alpha: 0.85)
+                : Colors.black.withValues(alpha: 0.72),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+          ),
+          child: Text(
+            text,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontFamily: 'monospace',
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ),
       ),
     );
