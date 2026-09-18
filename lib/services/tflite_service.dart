@@ -57,6 +57,7 @@ class TFLiteService {
 
   int _inputWidth = 0;
   int _inputHeight = 0;
+  bool _inputChannelsFirst = false;
   TensorType _inputType = TensorType.float32;
   double _inputScale = 1.0;
   int _inputZeroPoint = 0;
@@ -112,8 +113,11 @@ class TFLiteService {
 
     final inputTensor = _interpreter!.getInputTensor(0);
     final inputShape = inputTensor.shape;
-    _inputHeight = inputShape[1];
-    _inputWidth = inputShape[2];
+    final isNhwc = inputShape.length == 4 && inputShape[3] == 3;
+    final isNchw = inputShape.length == 4 && inputShape[1] == 3;
+    _inputChannelsFirst = isNchw;
+    _inputHeight = isNchw ? inputShape[2] : inputShape[1];
+    _inputWidth = isNchw ? inputShape[3] : inputShape[2];
     _inputType = inputTensor.type;
     _inputScale = inputTensor.params.scale;
     _inputZeroPoint = inputTensor.params.zeroPoint;
@@ -126,6 +130,7 @@ class TFLiteService {
 
     debugPrint(
       '✅ الموديل جاهز | input: ${_inputWidth}x$_inputHeight '
+      '| layout: ${_inputChannelsFirst ? 'NCHW' : 'NHWC'} '
       '| type: $_inputType | q=($_inputScale, $_inputZeroPoint) '
       '| output: ${outputTensor.shape} ${outputTensor.type} '
       'q=(${outputTensor.params.scale}, ${outputTensor.params.zeroPoint}) '
@@ -136,7 +141,7 @@ class TFLiteService {
     // بمخرج float إما end-to-end [1,N,6] أو raw [1,C,N].
     final inputIsSupported = inputShape.length == 4 &&
         inputShape[0] == 1 &&
-        inputShape[3] == 3 &&
+        (isNhwc || isNchw) &&
         (_inputType == TensorType.float32 || _inputType == TensorType.uint8);
     final outputShape = outputTensor.shape;
     final outputIsEndToEnd =
@@ -147,7 +152,7 @@ class TFLiteService {
         outputShape[2] > 1;
     if (!inputIsSupported) {
       _startupError =
-          'Unsupported model input: shape=$inputShape type=$_inputType. Expected [1,H,W,3] float32/uint8.';
+          'Unsupported model input: shape=$inputShape type=$_inputType. Expected [1,H,W,3] or [1,3,H,W] float32/uint8.';
     } else if (outputTensor.type != TensorType.float32) {
       _startupError =
           'Unsupported model output type: ${outputTensor.type}. This build expects float32 output.';
@@ -230,6 +235,7 @@ class TFLiteService {
         modelBuffer: _modelBuffer!,
         inputWidth: _inputWidth,
         inputHeight: _inputHeight,
+        inputChannelsFirst: _inputChannelsFirst,
         inputTypeIndex: _inputType.index,
         inputScale: _inputScale,
         inputZeroPoint: _inputZeroPoint,
@@ -382,30 +388,34 @@ class TFLiteService {
 
       if (_inputType == TensorType.float32) {
         final f = Float32List(totalPixels * 3);
-        int i = 0;
         for (int y = 0; y < _inputHeight; y++) {
           for (int x = 0; x < _inputWidth; x++) {
             final inImage = x >= padX && x < padX + resizedW && y >= padY && y < padY + resizedH;
             final p = inImage ? source.getPixel(x - padX, y - padY) : null;
-            f[i++] = (p?.r ?? 114) / 255.0;
-            f[i++] = (p?.g ?? 114) / 255.0;
-            f[i++] = (p?.b ?? 114) / 255.0;
+            final pixel = y * _inputWidth + x;
+            final base = _inputChannelsFirst ? pixel : pixel * 3;
+            f[base] = (p?.r ?? 114) / 255.0;
+            f[_inputChannelsFirst ? totalPixels + pixel : base + 1] =
+                (p?.g ?? 114) / 255.0;
+            f[_inputChannelsFirst ? totalPixels * 2 + pixel : base + 2] =
+                (p?.b ?? 114) / 255.0;
           }
         }
         buffer = f;
       } else {
         final u = Uint8List(totalPixels * 3);
         final scale = _inputScale == 0 ? 1.0 : _inputScale;
-        int i = 0;
         for (int y = 0; y < _inputHeight; y++) {
           for (int x = 0; x < _inputWidth; x++) {
             final inImage = x >= padX && x < padX + resizedW && y >= padY && y < padY + resizedH;
             final p = inImage ? source.getPixel(x - padX, y - padY) : null;
-            u[i++] =
+            final pixel = y * _inputWidth + x;
+            final base = _inputChannelsFirst ? pixel : pixel * 3;
+            u[base] =
                 (((p?.r ?? 114) / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
-            u[i++] =
+            u[_inputChannelsFirst ? totalPixels + pixel : base + 1] =
                 (((p?.g ?? 114) / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
-            u[i++] =
+            u[_inputChannelsFirst ? totalPixels * 2 + pixel : base + 2] =
                 (((p?.b ?? 114) / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
           }
         }
@@ -449,6 +459,7 @@ class TFLiteService {
     final inputType = TensorType.values[init.inputTypeIndex];
     final w = init.inputWidth;
     final h = init.inputHeight;
+    final channelsFirst = init.inputChannelsFirst;
     final totalPixels = w * h;
 
     // ── تخصيص مرة واحدة فقط (بدل كل فريم) ────────────────────────────────
@@ -505,6 +516,7 @@ class TFLiteService {
           yMap: yMap,
           floatBuf: floatBuf,
           uint8Buf: uint8Buf,
+          channelsFirst: channelsFirst,
           inputScale: init.inputScale,
           inputZeroPoint: init.inputZeroPoint,
         );
@@ -539,6 +551,7 @@ class TFLiteService {
     required Int32List yMap,
     required Float32List? floatBuf,
     required Uint8List? uint8Buf,
+    required bool channelsFirst,
     required double inputScale,
     required int inputZeroPoint,
   }) {
@@ -547,7 +560,26 @@ class TFLiteService {
     // للتكميم: نحسب المعامل مرة وحدة برا اللوب بدل قسمة لكل قناة لكل بكسل.
     final double qFactor = 1.0 / (255.0 * scale);
 
-    int dst = 0;
+    final totalPixels = inputWidth * inputHeight;
+    int pixel = 0;
+
+    void writePixel(int r, int g, int b) {
+      final base = channelsFirst ? pixel : pixel * 3;
+      if (isFloat) {
+        floatBuf![base] = r * 0.00392156862745098;
+        floatBuf[channelsFirst ? totalPixels + pixel : base + 1] =
+            g * 0.00392156862745098;
+        floatBuf[channelsFirst ? totalPixels * 2 + pixel : base + 2] =
+            b * 0.00392156862745098;
+      } else {
+        uint8Buf![base] = (r * qFactor + inputZeroPoint).round().clamp(0, 255);
+        uint8Buf[channelsFirst ? totalPixels + pixel : base + 1] =
+            (g * qFactor + inputZeroPoint).round().clamp(0, 255);
+        uint8Buf[channelsFirst ? totalPixels * 2 + pixel : base + 2] =
+            (b * qFactor + inputZeroPoint).round().clamp(0, 255);
+      }
+      pixel++;
+    }
 
     if (frame.isYuv) {
       final p0 = frame.plane0;
@@ -583,18 +615,7 @@ class TFLiteService {
           g = g < 0 ? 0 : (g > 255 ? 255 : g);
           b = b < 0 ? 0 : (b > 255 ? 255 : b);
 
-          if (isFloat) {
-            floatBuf[dst++] = r * 0.00392156862745098; // r / 255
-            floatBuf[dst++] = g * 0.00392156862745098;
-            floatBuf[dst++] = b * 0.00392156862745098;
-          } else {
-            uint8Buf![dst++] =
-                (r * qFactor + inputZeroPoint).round().clamp(0, 255);
-            uint8Buf[dst++] =
-                (g * qFactor + inputZeroPoint).round().clamp(0, 255);
-            uint8Buf[dst++] =
-                (b * qFactor + inputZeroPoint).round().clamp(0, 255);
-          }
+          writePixel(r, g, b);
         }
       }
     } else {
@@ -612,18 +633,7 @@ class TFLiteService {
           final g = sx < 0 || sy < 0 ? 114 : p0[src + 1];
           final r = sx < 0 || sy < 0 ? 114 : p0[src + 2];
 
-          if (isFloat) {
-            floatBuf[dst++] = r * 0.00392156862745098;
-            floatBuf[dst++] = g * 0.00392156862745098;
-            floatBuf[dst++] = b * 0.00392156862745098;
-          } else {
-            uint8Buf![dst++] =
-                (r * qFactor + inputZeroPoint).round().clamp(0, 255);
-            uint8Buf[dst++] =
-                (g * qFactor + inputZeroPoint).round().clamp(0, 255);
-            uint8Buf[dst++] =
-                (b * qFactor + inputZeroPoint).round().clamp(0, 255);
-          }
+          writePixel(r, g, b);
         }
       }
     }
@@ -843,6 +853,7 @@ class _WorkerInit {
     required this.modelBuffer,
     required this.inputWidth,
     required this.inputHeight,
+    required this.inputChannelsFirst,
     required this.inputTypeIndex,
     required this.inputScale,
     required this.inputZeroPoint,
@@ -855,6 +866,7 @@ class _WorkerInit {
   final Uint8List modelBuffer;
   final int inputWidth;
   final int inputHeight;
+  final bool inputChannelsFirst;
   final int inputTypeIndex;
   final double inputScale;
   final int inputZeroPoint;
