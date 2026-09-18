@@ -77,7 +77,10 @@ class TFLiteService {
   /// الفعلي أبطأ بكثير من المقصود (مثلاً 8 FPS ÷ 3 = ~2.7 تحليل/ثانية).
   static const int frameSkipRate = 1;
 
-  static const double _confThreshold = 0.35;
+  // تبدأ هذه القيمة منخفضة عمداً أثناء الاختبار الميداني. تأكيد ثلاثة
+  // فريمات في الشاشة يمنع البلاغات العابرة، بينما تسجيل أعلى score يجعل
+  // ضبط العتبة لاحقاً مبنياً على صور الهاتف لا على بيانات التدريب فقط.
+  static const double _confThreshold = 0.20;
   static const double _iouThreshold = 0.45;
   static const String _modelAsset = 'assets/best_w8a32.tflite';
 
@@ -110,10 +113,14 @@ class TFLiteService {
     _inputType = inputTensor.type;
     _inputScale = inputTensor.params.scale;
     _inputZeroPoint = inputTensor.params.zeroPoint;
+    final outputTensor = _interpreter!.getOutputTensor(0);
 
     debugPrint(
       '✅ الموديل جاهز | input: ${_inputWidth}x$_inputHeight '
-      '| type: $_inputType | labels: $_labels',
+      '| type: $_inputType | q=($_inputScale, $_inputZeroPoint) '
+      '| output: ${outputTensor.shape} ${outputTensor.type} '
+      'q=(${outputTensor.params.scale}, ${outputTensor.params.zeroPoint}) '
+      '| labels: $_labels',
     );
 
     await _startWorkerIsolate();
@@ -200,6 +207,10 @@ class TFLiteService {
         if (!ready.isCompleted) ready.complete();
         debugPrint('✅ isolate الاستنتاج الدائم جاهز');
       } else if (message is Map<String, dynamic>) {
+        final error = message['error'];
+        if (error != null) {
+          debugPrint('❌ فشل worker الاستنتاج: $error');
+        }
         final p = _pending;
         _pending = null;
         if (p != null && !p.isCompleted) p.complete(message);
@@ -303,12 +314,21 @@ class TFLiteService {
       final decoded = img.decodeImage(bytes);
       if (decoded == null) return _empty;
 
-      final resized = img.copyResize(
+      // نفس letterbox المستخدم في مسار الكاميرا وتدريب YOLO: لا نمدّ
+      // الحفرة أفقياً/عمودياً إلى مربع لأن ذلك يغيّر شكلها وثقتها.
+      final scale = (_inputWidth / decoded.width) < (_inputHeight / decoded.height)
+          ? (_inputWidth / decoded.width)
+          : (_inputHeight / decoded.height);
+      final resizedW = (decoded.width * scale).round();
+      final resizedH = (decoded.height * scale).round();
+      final source = img.copyResize(
         decoded,
-        width: _inputWidth,
-        height: _inputHeight,
+        width: resizedW,
+        height: resizedH,
         interpolation: img.Interpolation.linear,
       );
+      final padX = (_inputWidth - resizedW) ~/ 2;
+      final padY = (_inputHeight - resizedH) ~/ 2;
 
       final totalPixels = _inputWidth * _inputHeight;
       final TypedData buffer;
@@ -318,10 +338,11 @@ class TFLiteService {
         int i = 0;
         for (int y = 0; y < _inputHeight; y++) {
           for (int x = 0; x < _inputWidth; x++) {
-            final p = resized.getPixel(x, y);
-            f[i++] = p.r / 255.0;
-            f[i++] = p.g / 255.0;
-            f[i++] = p.b / 255.0;
+            final inImage = x >= padX && x < padX + resizedW && y >= padY && y < padY + resizedH;
+            final p = inImage ? source.getPixel(x - padX, y - padY) : null;
+            f[i++] = (p?.r ?? 114) / 255.0;
+            f[i++] = (p?.g ?? 114) / 255.0;
+            f[i++] = (p?.b ?? 114) / 255.0;
           }
         }
         buffer = f;
@@ -331,13 +352,14 @@ class TFLiteService {
         int i = 0;
         for (int y = 0; y < _inputHeight; y++) {
           for (int x = 0; x < _inputWidth; x++) {
-            final p = resized.getPixel(x, y);
+            final inImage = x >= padX && x < padX + resizedW && y >= padY && y < padY + resizedH;
+            final p = inImage ? source.getPixel(x - padX, y - padY) : null;
             u[i++] =
-                ((p.r / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
+                (((p?.r ?? 114) / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
             u[i++] =
-                ((p.g / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
+                (((p?.g ?? 114) / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
             u[i++] =
-                ((p.b / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
+                (((p?.b ?? 114) / 255.0) / scale + _inputZeroPoint).round().clamp(0, 255);
           }
         }
         buffer = u;
@@ -398,15 +420,23 @@ class TFLiteService {
       try {
         final f = message;
 
-        // إعادة بناء جداول البحث فقط لو تغيّرت دقة الكاميرا
+        // Letterbox مطابق لـ YOLO: احتفظ بنسبة الأبعاد واملأ الحواف بـ114.
+        // القيمة -1 في الخريطة تعني padding وليست بكسلاً من الكاميرا.
         if (f.width != lastSrcW || f.height != lastSrcH) {
+          final resizeScale = (w / f.width) < (h / f.height)
+              ? (w / f.width)
+              : (h / f.height);
+          final resizedW = (f.width * resizeScale).round();
+          final resizedH = (f.height * resizeScale).round();
+          final padX = (w - resizedW) ~/ 2;
+          final padY = (h - resizedH) ~/ 2;
           for (int tx = 0; tx < w; tx++) {
-            final v = tx * f.width ~/ w;
-            xMap[tx] = v >= f.width ? f.width - 1 : v;
+            final v = ((tx - padX) / resizeScale).floor();
+            xMap[tx] = v < 0 || v >= f.width ? -1 : v;
           }
           for (int ty = 0; ty < h; ty++) {
-            final v = ty * f.height ~/ h;
-            yMap[ty] = v >= f.height ? f.height - 1 : v;
+            final v = ((ty - padY) / resizeScale).floor();
+            yMap[ty] = v < 0 || v >= f.height ? -1 : v;
           }
           lastSrcW = f.width;
           lastSrcH = f.height;
@@ -434,9 +464,12 @@ class TFLiteService {
         );
 
         init.mainPort.send(result);
-      } catch (e) {
-        init.mainPort
-            .send({'label': 'Clear Road', 'detections': <Map<String, dynamic>>[]});
+      } catch (e, stack) {
+        init.mainPort.send({
+          'label': 'Clear Road',
+          'detections': <Map<String, dynamic>>[],
+          'error': '$e\n$stack',
+        });
       }
     });
   }
@@ -473,21 +506,23 @@ class TFLiteService {
 
       for (int ty = 0; ty < inputHeight; ty++) {
         final sy = yMap[ty];
-        final yRow = sy * yStride;
-        final uvRow = (sy >> 1) * uvStride;
+        final yRow = sy < 0 ? 0 : sy * yStride;
+        final uvRow = sy < 0 ? 0 : (sy >> 1) * uvStride;
 
         for (int tx = 0; tx < inputWidth; tx++) {
           final sx = xMap[tx];
-          final uvIdx = uvPixel * (sx >> 1) + uvRow;
+          int r = 114, g = 114, b = 114;
+          if (sx >= 0 && sy >= 0) {
+            final uvIdx = uvPixel * (sx >> 1) + uvRow;
+            final yp = p0[yRow + sx];
+            final up = p1[uvIdx];
+            final vp = p2[uvIdx];
 
-          final yp = p0[yRow + sx];
-          final up = p1[uvIdx];
-          final vp = p2[uvIdx];
-
-          // BT.601 بحساب صحيح (integer) — أسرع من الكسور العشرية
-          int r = yp + ((vp - 128) * 1436 >> 10);
-          int g = yp - ((up - 128) * 352 >> 10) - ((vp - 128) * 731 >> 10);
-          int b = yp + ((up - 128) * 1814 >> 10);
+            // BT.601 بحساب صحيح (integer) — أسرع من الكسور العشرية
+            r = yp + ((vp - 128) * 1436 >> 10);
+            g = yp - ((up - 128) * 352 >> 10) - ((vp - 128) * 731 >> 10);
+            b = yp + ((up - 128) * 1814 >> 10);
+          }
 
           r = r < 0 ? 0 : (r > 255 ? 255 : r);
           g = g < 0 ? 0 : (g > 255 ? 255 : g);
@@ -513,12 +548,14 @@ class TFLiteService {
       final srcW = frame.width;
 
       for (int ty = 0; ty < inputHeight; ty++) {
-        final rowBase = yMap[ty] * srcW;
+        final sy = yMap[ty];
+        final rowBase = sy < 0 ? 0 : sy * srcW;
         for (int tx = 0; tx < inputWidth; tx++) {
-          final src = (rowBase + xMap[tx]) << 2;
-          final b = p0[src];
-          final g = p0[src + 1];
-          final r = p0[src + 2];
+          final sx = xMap[tx];
+          final src = (rowBase + (sx < 0 ? 0 : sx)) << 2;
+          final b = sx < 0 || sy < 0 ? 114 : p0[src];
+          final g = sx < 0 || sy < 0 ? 114 : p0[src + 1];
+          final r = sx < 0 || sy < 0 ? 114 : p0[src + 2];
 
           if (isFloat) {
             floatBuf[dst++] = r * 0.00392156862745098;
@@ -592,11 +629,15 @@ class TFLiteService {
           ? labels[classId]
           : 'Class $classId';
 
+      final coordinateScale =
+          (row[0].abs() > 2 || row[1].abs() > 2 || row[2].abs() > 2 || row[3].abs() > 2)
+              ? 640.0
+              : 1.0;
       detections.add({
-        'x1': row[0].clamp(0.0, 1.0),
-        'y1': row[1].clamp(0.0, 1.0),
-        'x2': row[2].clamp(0.0, 1.0),
-        'y2': row[3].clamp(0.0, 1.0),
+        'x1': (row[0] / coordinateScale).clamp(0.0, 1.0),
+        'y1': (row[1] / coordinateScale).clamp(0.0, 1.0),
+        'x2': (row[2] / coordinateScale).clamp(0.0, 1.0),
+        'y2': (row[3] / coordinateScale).clamp(0.0, 1.0),
         'conf': conf,
         'label': label,
       });
@@ -607,7 +648,11 @@ class TFLiteService {
       }
     }
 
-    return {'label': bestLabel, 'detections': detections};
+    return {
+      'label': bestLabel,
+      'detections': detections,
+      'maxScore': maxScore,
+    };
   }
 
   /// `(1, nc+4, N)` → كل عمود صندوق مرشّح [cx, cy, w, h, scores...] + NMS يدوي.
@@ -640,11 +685,16 @@ class TFLiteService {
       final bw = raw[2][a];
       final bh = raw[3][a];
 
+      // بعض صادرات LiteRT تعيد الإحداثيات بوحدة بكسل 640، وبعضها
+      // يعيدها مطبّعة. لا نقصّها إلى 1 قبل تحويلها وإلا يصبح كل box شاشة كاملة.
+      final coordinateScale = (cx.abs() > 2 || cy.abs() > 2 || bw.abs() > 2 || bh.abs() > 2)
+          ? 640.0
+          : 1.0;
       candidates.add([
-        (cx - bw / 2).clamp(0.0, 1.0),
-        (cy - bh / 2).clamp(0.0, 1.0),
-        (cx + bw / 2).clamp(0.0, 1.0),
-        (cy + bh / 2).clamp(0.0, 1.0),
+        ((cx - bw / 2) / coordinateScale).clamp(0.0, 1.0),
+        ((cy - bh / 2) / coordinateScale).clamp(0.0, 1.0),
+        ((cx + bw / 2) / coordinateScale).clamp(0.0, 1.0),
+        ((cy + bh / 2) / coordinateScale).clamp(0.0, 1.0),
         bestScore,
         bestClass.toDouble(),
       ]);
@@ -690,7 +740,11 @@ class TFLiteService {
       }
     }
 
-    return {'label': bestLabel, 'detections': detections};
+    return {
+      'label': bestLabel,
+      'detections': detections,
+      'maxScore': maxScore,
+    };
   }
 
   static double _iou(List<double> a, List<double> b) {

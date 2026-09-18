@@ -37,6 +37,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
 
   bool _isProcessingFrame = false;
   int _lastFrameTime = 0;
+  int _lastDiagnosticLogTime = 0;
 
   /// الفاصل الزمني بين كل تحليلين. 120ms ≈ 8 تحليلات/ثانية.
   ///
@@ -59,8 +60,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
   /// نتيجة `hasVibrator()` مخزّنة — كانت تُستدعى (await) عند كل كشف.
   bool? _hasVibrator;
 
-  final double _uiConfidenceThreshold = 0.30;
-  final double _reportConfidenceThreshold = 0.50;
+  // عتبات ميدانية مؤقتاً: الكشف منخفض العتبة لنعرف إن النموذج يرى الحفرة،
+  // والبلاغ أعلى منها مع تأكيد 3 فريمات حتى لا تعود الهلوسة السابقة.
+  final double _uiConfidenceThreshold = 0.20;
+  final double _reportConfidenceThreshold = 0.35;
 
   /// رُفع من 1 إلى 3: بـ 1 كان أي false positive بفريم واحد يطلق بلاغ
   /// فعلي + اهتزاز. 3 فريمات متتالية (~0.4 ثانية) بتلغي أغلب الكشوفات
@@ -189,6 +192,19 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
         // لازم نتجاهله بالكامل، مش نعامله كـ "طريق نظيف"، وإلا
         // المربعات بترفرف والعدّاد الزمني بيتصفّر كل فريم.
         if (result == null) return;
+
+        // سجل ميداني محدود: يكشف فوراً إن المشكلة عتبة ثقة أم خطأ worker
+        // من دون إغراق logcat بسجل لكل فريم.
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if (now - _lastDiagnosticLogTime >= 2000) {
+          _lastDiagnosticLogTime = now;
+          final maxScore = (result['maxScore'] as num?)?.toDouble() ?? 0.0;
+          final count = (result['detections'] as List?)?.length ?? 0;
+          debugPrint(
+            '🔎 AI diagnostics | maxScore=${maxScore.toStringAsFixed(3)} '
+            '| detections=$count | frame=${image.width}x${image.height}',
+          );
+        }
 
         final detections = _normalizeDetections(result['detections']);
         final uiPothole = _pickBestPotholeDetection(
