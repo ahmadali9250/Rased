@@ -155,14 +155,34 @@ class TFLiteService {
         (isNhwc || isNchw) &&
         (_inputType == TensorType.float32 || _inputType == TensorType.uint8);
     final outputShape = outputTensor.shape;
+
+    // ⚠️ إصلاح مهم: لازم نتأكد إن outputIsEndToEnd و outputIsRaw حالتان
+    // متبادلتان (mutually exclusive) ولا يمكن أن تكونا صحيحتين معاً على
+    // نفس الـ output tensor. قبل هذا التعديل، موديل end-to-end بشكل
+    // [1, 300, 6] كان يحقق outputIsEndToEnd=true (لأن outputShape[2]==6)
+    // *و* outputIsRaw=true بنفس الوقت (لأن outputShape[1]=300>=5 و
+    // outputShape[2]=6>1). هذا كان يخلي rawClassCount يُحسب خطأ
+    // (300-4=296) ويقارَن مع عدد التسميات الحقيقي، فيطلع خطأ وهمي
+    // "YOLO model/classes mismatch" حتى لو الموديل end-to-end وسليم 100%.
+    //
+    // الحل: نستثني صراحة حالة end-to-end من شرط outputIsRaw.
     final outputIsEndToEnd =
         outputShape.length == 3 && outputShape[0] == 1 && outputShape[2] == 6;
     final outputIsRaw =
+        !outputIsEndToEnd && // 👈 الإصلاح: يمنع التداخل بين الحالتين
         outputShape.length == 3 &&
         outputShape[0] == 1 &&
         outputShape[1] >= 5 &&
         outputShape[2] > 1;
     final rawClassCount = outputIsRaw ? outputShape[1] - 4 : null;
+
+    // سجل تشخيصي مبكر: يبيّن فوراً أي فرع (end-to-end / raw) تم اختياره
+    // وقيمة outputShape الفعلية، بدل ما نكتشف الاختيار الخاطئ من خطأ لاحق.
+    debugPrint(
+      'ℹ️ output shape=$outputShape | endToEnd=$outputIsEndToEnd '
+      '| raw=$outputIsRaw | rawClassCount=$rawClassCount',
+    );
+
     if (!inputIsSupported) {
       _startupError =
           'Unsupported model input: shape=$inputShape type=$_inputType. Expected [1,H,W,3] or [1,3,H,W] float32/uint8.';
