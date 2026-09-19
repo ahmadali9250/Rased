@@ -96,7 +96,7 @@ class TFLiteService {
   // ضبط العتبة لاحقاً مبنياً على صور الهاتف لا على بيانات التدريب فقط.
   static const double _confThreshold = 0.20;
   static const double _iouThreshold = 0.45;
-  static const String _modelAsset = 'assets/best_float16.tflite';
+  static const String _modelAsset = 'assets/best.tflite';
 
   bool get isReady => _startupError == null && _interpreter != null;
   String? get diagnosticError => _startupError;
