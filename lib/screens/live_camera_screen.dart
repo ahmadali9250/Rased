@@ -1,14 +1,35 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui';
-import 'package:flutter/material.dart';
+import 'dart:math' as math;
+
 import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart' show DeviceOrientation;
 import 'package:geolocator/geolocator.dart';
-import '../services/api_service.dart';
-import '../services/tflite_service.dart';
-import '../widgets/bounding_box_painter.dart';
 import 'package:vibration/vibration.dart';
 
+import '../services/api_service.dart';
+import '../services/episode_log.dart';
+import '../services/report_trigger_policy.dart';
+import '../services/report_upload_queue.dart';
+import '../services/tflite_service.dart';
+import '../widgets/bounding_box_painter.dart';
+
+/// Dashcam mode: continuous pothole detection while driving.
+///
+/// Hot path (per camera frame) does no work on the UI isolate except handing
+/// the frame to [TFLiteService], which forwards it to the detection worker
+/// isolate. Results come back through [TFLiteService.onResult].
+///
+/// Throughput rule: at most one frame is in the worker at a time. If frames
+/// arrive while it is busy we keep only the newest and send it the moment a
+/// result returns, so the processing rate always matches what the phone can
+/// do — no fixed FPS throttle.
+///
+/// Reports never stop the stream: the worker JPEG-encodes the frame that
+/// triggered the detection, GPS comes from a continuous stream, and the upload
+/// is queued in [ReportUploadQueue].
 class LiveCameraScreen extends StatefulWidget {
   const LiveCameraScreen({super.key});
 
@@ -19,69 +40,139 @@ class LiveCameraScreen extends StatefulWidget {
 class _LiveCameraScreenState extends State<LiveCameraScreen>
     with WidgetsBindingObserver {
   CameraController? _cameraController;
-  final TFLiteService _tfliteService = TFLiteService();
+  final TFLiteService _ai = TFLiteService.instance;
+  final ReportUploadQueue _uploads = ReportUploadQueue.instance;
 
   bool _isCameraInitialized = false;
   bool _isDetecting = false;
 
-  // ⚡ الأهم للأداء: نتائج الكشف بـ ValueNotifier بدل setState.
-  //
-  // setState كل فريم كان بيعيد بناء الشجرة كاملة — وفيها **BackdropFilter**
-  // (blur) مرتين. الـ blur من أغلى العمليات على GPU الموبايل، وإعادة بنائه
-  // 8 مرات بالثانية كانت تستهلك أكثر من الاستنتاج نفسه.
-  // هلق بس الـ painter ونص الـ HUD بيتحدّثوا، والـ blur بيضل ثابت.
-  final ValueNotifier<List<Map<String, dynamic>>> _detections =
-      ValueNotifier<List<Map<String, dynamic>>>(const []);
+  // Only the painter and the HUD text listen to these; the rest of the tree
+  // is never rebuilt per frame.
+  final ValueNotifier<_Overlay> _overlay =
+      ValueNotifier<_Overlay>(const _Overlay.empty());
   final ValueNotifier<String> _prediction =
       ValueNotifier<String>('Scanning road...');
-  // ملخص حي للتنبؤ الحالي. سجل محاولات الـ backend نفسه موجود في
-  // TFLiteService ويظهر معه على الشاشة، فلا نحتاج Logcat أو USB.
   final ValueNotifier<String> _diagnostics =
       ValueNotifier<String>('AI: waiting for first frame…');
 
-  bool _isProcessingFrame = false;
-  int _lastFrameTime = 0;
+  // --- frame flow ---
+  CameraImage? _pendingFrame;
+
+  /// Ceiling on processed frames per second. Above ~15 FPS extra frames add
+  /// nothing to detection (one frame per metre at 50 km/h, five confirming
+  /// hits in 300 ms) but heat the phone, and a hot phone throttles. Frames
+  /// arriving sooner than this interval are dropped.
+  static const int maxProcessFps = 15;
+  static const int _minDispatchIntervalUs = 1000000 ~/ maxProcessFps;
+  int _lastDispatchUs = 0;
+
+  final _FrameStats _stats = _FrameStats();
   int _lastDiagnosticLogTime = 0;
+  int _lastFrameW = 0;
+  int _lastFrameH = 0;
+  TimingsCallback? _timingsCallback;
 
-  /// الفاصل الزمني بين كل تحليلين. 120ms ≈ 8 تحليلات/ثانية.
-  ///
-  /// ⚠️ هاد هو **المصدر الوحيد** لتنظيم المعدل — تأكد إن
-  /// `TFLiteService.frameSkipRate = 1` وإلا التنظيمين بيتراكمو.
-  final int _fpsIntervalMs = 120;
+  // --- reporting ---
+  /// Decides when an episode of detections becomes one report. Time-based
+  /// and FPS-independent; gates and defaults live in
+  /// `report_trigger_policy.dart`. Created lazily once the model input size
+  /// is known, recreated on a model switch.
+  ReportTriggerPolicy? _policy;
+  final EpisodeLog _episodeLog = EpisodeLog.instance;
 
-  bool _isUploadingReport = false;
-  bool _isReporting = false;
-  bool _isRestartingStream = false;
-  DateTime? _lastReportTime;
+  /// Skip a new report within this distance of a recent one (same pothole
+  /// on a return leg, or GPS drift while stopped in traffic).
+  static const double _dedupeRadiusMeters = 20;
+  static const int _maxRecentFixes = 200;
 
-  /// رُفع من 2 إلى 8 ثوانٍ: عند 60 كم/س السيارة بتقطع ~17 متر بالثانية،
-  /// فـ 2 ثانية معناها بلاغات متعددة لنفس الحفرة تقريباً.
-  final int _cooldownSeconds = 8;
+  /// Safety floor only. The episode model prevents duplicates; this catches
+  /// an episode split by a long flicker at speed (> 400 ms at 70 km/h is
+  /// more than the dedupe radius).
+  static const int _minReportIntervalMs = 1000;
 
-  Position? _cachedPosition;
-  bool _isFetchingGps = false;
+  /// At confirmation the pothole is still ~10–15 m ahead of the GPS antenna.
+  static const double _lookAheadMeters = 12;
 
-  /// نتيجة `hasVibrator()` مخزّنة — كانت تُستدعى (await) عند كل كشف.
+  int _lastReportUs = 0;
+  final List<_GeoPoint> _recentReportFixes = <_GeoPoint>[];
+  bool _snapshotInFlight = false;
+
+  StreamSubscription<Position>? _gpsSub;
+  Position? _latestFix;
+
+  /// Heading (degrees) from the last fix taken while moving. Used to apply
+  /// the look-ahead when the car is stopped, when GPS reports no heading.
+  double? _lastMovingHeading;
+  String? _gpsStatus;
+
   bool? _hasVibrator;
+  VoidCallback? _outcomeListener;
 
-  // عتبات ميدانية مؤقتاً: الكشف منخفض العتبة لنعرف إن النموذج يرى الحفرة،
-  // والبلاغ أعلى منها مع تأكيد 3 فريمات حتى لا تعود الهلوسة السابقة.
-  final double _uiConfidenceThreshold = 0.20;
-  final double _reportConfidenceThreshold = 0.35;
+  /// Boxes at or above this are drawn so we can see what the model sees.
+  /// The report policy has its own, stricter gates.
+  static const double _uiConfidenceThreshold = 0.20;
 
-  /// رُفع من 1 إلى 3: بـ 1 كان أي false positive بفريم واحد يطلق بلاغ
-  /// فعلي + اهتزاز. 3 فريمات متتالية (~0.4 ثانية) بتلغي أغلب الكشوفات
-  /// العابرة بدون ما تفوّت حفرة حقيقية.
-  final int _requiredConsecutivePotholeFrames = 3;
-  int _potholeFrameStreak = 0;
+  // ===========================================================================
+  // Lifecycle
+  // ===========================================================================
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    _timingsCallback = _onFrameTimings;
+    SchedulerBinding.instance.addTimingsCallback(_timingsCallback!);
+
+    _ai.onResult = _onDetectionResult;
+
+    _outcomeListener = _onUploadOutcome;
+    _uploads.lastOutcome.addListener(_outcomeListener!);
+
     _initializeCameraAndAI();
-    _warmUpGps();
+    _startGps();
     _cacheVibratorSupport();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    if (_timingsCallback != null) {
+      SchedulerBinding.instance.removeTimingsCallback(_timingsCallback!);
+    }
+    // Tear-offs of the same method are `==` but not `identical`.
+    if (_ai.onResult == _onDetectionResult) {
+      _ai.onResult = null;
+    }
+    _uploads.lastOutcome.removeListener(_outcomeListener!);
+    _stopAIDetectionStream(notify: false);
+    _pendingFrame = null;
+    _cameraController?.dispose();
+    _gpsSub?.cancel();
+    // The AI worker is app-wide and stays warm — never disposed here.
+    _overlay.dispose();
+    _prediction.dispose();
+    _diagnostics.dispose();
+    super.dispose();
+  }
+
+  /// Background → stop camera + GPS (battery, heat, and avoids crashes on
+  /// resume). Foreground → start again.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      _stopAIDetectionStream();
+      _gpsSub?.pause();
+    } else if (state == AppLifecycleState.resumed) {
+      if (_gpsSub?.isPaused ?? false) _gpsSub?.resume();
+      if (_isCameraInitialized && !controller.value.isStreamingImages) {
+        _startFastAIDetectionStream();
+      }
+    }
   }
 
   Future<void> _cacheVibratorSupport() async {
@@ -92,57 +183,101 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     }
   }
 
-  /// إيقاف الكاميرا والاستنتاج لما التطبيق يروح للخلفية — توفير بطارية
-  /// ومنع تسخين الجهاز، وكمان بيمنع كراش عند العودة.
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) return;
+  // ===========================================================================
+  // GPS: continuous stream, always a fresh fix, never awaited on the hot path
+  // ===========================================================================
 
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused) {
-      _stopAIDetectionStream();
-    } else if (state == AppLifecycleState.resumed) {
-      if (_isCameraInitialized && !controller.value.isStreamingImages) {
-        _startFastAIDetectionStream();
-      }
-    }
-  }
-
-  Future<void> _warmUpGps() async {
-    if (_isFetchingGps) return;
-    _isFetchingGps = true;
+  Future<void> _startGps() async {
     try {
-      final last = await Geolocator.getLastKnownPosition();
-      if (last != null && mounted) {
-        _cachedPosition = last;
-        debugPrint("📍 GPS warm-up (last known)");
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        _gpsStatus = 'GPS permission denied';
+        return;
       }
 
-      final fresh = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      ).timeout(const Duration(seconds: 20));
+      _latestFix ??= await Geolocator.getLastKnownPosition();
 
-      if (mounted) {
-        _cachedPosition = fresh;
-        debugPrint("✅ GPS warm-up (fresh)");
-      }
+      final LocationSettings settings = Platform.isAndroid
+          ? AndroidSettings(
+              accuracy: LocationAccuracy.high,
+              distanceFilter: 0,
+              intervalDuration: const Duration(seconds: 1),
+            )
+          : const LocationSettings(
+              accuracy: LocationAccuracy.high,
+              distanceFilter: 0,
+            );
+
+      _gpsSub = Geolocator.getPositionStream(locationSettings: settings).listen(
+        (position) {
+          _latestFix = position;
+          _gpsStatus = null;
+          if (position.speed.isFinite &&
+              position.speed > 1.0 &&
+              position.heading.isFinite &&
+              position.heading >= 0) {
+            _lastMovingHeading = position.heading;
+          }
+        },
+        onError: (Object e) {
+          _gpsStatus = 'GPS error: $e';
+          debugPrint('⚠️ GPS stream error: $e');
+        },
+      );
     } catch (e) {
-      debugPrint("⚠️ GPS warm-up failed: $e — will retry on next report");
-    } finally {
-      _isFetchingGps = false;
+      _gpsStatus = 'GPS unavailable: $e';
+      debugPrint('⚠️ GPS start failed: $e');
     }
   }
+
+  /// Latest fix moved forward along the heading by the fix's age (while
+  /// moving) plus the camera look-ahead, so the pin lands near the pothole
+  /// rather than on the car. When stopped, the last moving heading is used.
+  _GeoPoint? _projectedFix() {
+    final p = _latestFix;
+    if (p == null) return null;
+    double lat = p.latitude;
+    double lon = p.longitude;
+    final speed = p.speed.isFinite ? p.speed : 0.0;
+    final moving = speed > 1.0 && p.heading.isFinite && p.heading >= 0;
+    final heading = moving ? p.heading : _lastMovingHeading;
+    String source = 'raw';
+    if (heading != null) {
+      final ageSeconds =
+          DateTime.now().difference(p.timestamp).inMilliseconds / 1000.0;
+      final travelled = moving ? speed * ageSeconds.clamp(0.0, 3.0) : 0.0;
+      final distance = travelled + _lookAheadMeters;
+      final rad = heading * math.pi / 180.0;
+      final latRad = p.latitude * math.pi / 180.0;
+      lat += (distance * math.cos(rad)) / 111320.0;
+      final metersPerDegLon = 111320.0 * math.cos(latRad);
+      if (metersPerDegLon.abs() > 1) {
+        lon += (distance * math.sin(rad)) / metersPerDegLon;
+      }
+      source = moving ? 'moving' : 'stopped';
+    }
+    return _GeoPoint(lat, lon, source: source);
+  }
+
+  bool _isNearRecentReport(_GeoPoint fix) {
+    for (final r in _recentReportFixes) {
+      final d = Geolocator.distanceBetween(fix.lat, fix.lon, r.lat, r.lon);
+      if (d < _dedupeRadiusMeters) return true;
+    }
+    return false;
+  }
+
+  // ===========================================================================
+  // Camera + AI start-up
+  // ===========================================================================
 
   Future<void> _initializeCameraAndAI() async {
-    await _tfliteService.initializeModel();
-    final aiStartupError = _tfliteService.diagnosticError;
-    if (aiStartupError != null) {
-      _diagnostics.value = 'AI ERROR: $aiStartupError';
-    }
-
     final cameras = await availableCameras();
-    if (cameras.isEmpty) return;
+    if (cameras.isEmpty || !mounted) return;
 
     final backCamera = cameras.firstWhere(
       (cam) => cam.lensDirection == CameraLensDirection.back,
@@ -151,270 +286,202 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
 
     _cameraController = CameraController(
       backCamera,
+      // 720x480: enough for the model at 320–640 and for the report photo.
+      // `low` would upscale; `high` only costs bandwidth.
       ResolutionPreset.medium,
       enableAudio: false,
-      // 🔑 تحديد الصيغة صراحةً: بدونها الصيغة الافتراضية بتختلف بين
-      // الأجهزة (أحياناً JPEG/NV21) وبيصير التحويل بالـ service غلط
-      // أو بيفشل صامتاً.
-      imageFormatGroup:
-          Platform.isAndroid ? ImageFormatGroup.yuv420 : ImageFormatGroup.bgra8888,
+      // Explicit format: the default differs between devices (sometimes
+      // JPEG/NV21) and would break the worker's colour conversion.
+      imageFormatGroup: Platform.isAndroid
+          ? ImageFormatGroup.yuv420
+          : ImageFormatGroup.bgra8888,
     );
 
     try {
       await _cameraController!.initialize();
       if (!mounted) return;
-
       setState(() => _isCameraInitialized = true);
-      _startFastAIDetectionStream();
     } catch (e) {
-      debugPrint("❌ Camera initialization error: $e");
+      debugPrint('❌ Camera initialization error: $e');
+      return;
     }
+
+    _updateRotation();
+
+    // Usually already warm (pre-started in main.dart).
+    await _ai.initialize();
+    if (!mounted) return;
+    final aiStartupError = _ai.diagnosticError;
+    if (aiStartupError != null) {
+      _diagnostics.value = 'AI ERROR: $aiStartupError';
+      return;
+    }
+    _startFastAIDetectionStream();
+  }
+
+  /// Clockwise rotation that makes the sensor frame upright for the current
+  /// device orientation. Sent to the worker (no-op when unchanged).
+  void _updateRotation() {
+    final c = _cameraController;
+    if (c == null || !c.value.isInitialized) return;
+    final sensor = c.description.sensorOrientation;
+    final device = switch (c.value.deviceOrientation) {
+      DeviceOrientation.portraitUp => 0,
+      DeviceOrientation.landscapeLeft => 90,
+      DeviceOrientation.portraitDown => 180,
+      DeviceOrientation.landscapeRight => 270,
+    };
+    final rotation = c.description.lensDirection == CameraLensDirection.front
+        ? (sensor + device) % 360
+        : (sensor - device + 360) % 360;
+    _ai.setRotation(rotation);
   }
 
   void _startFastAIDetectionStream() {
     final controller = _cameraController;
     if (controller == null || !controller.value.isInitialized) return;
-
-    // 🔑 حماية من تشغيل الستريم مرتين (كان ممكن يصير عند العودة من
-    // رفع بلاغ + استئناف من الـ lifecycle بنفس الوقت) — التشغيل
-    // المزدوج بيرمي استثناء وبيضاعف الحمل.
+    // Starting twice throws and doubles the load (could happen when a
+    // lifecycle resume and a restart overlap).
     if (controller.value.isStreamingImages) return;
 
     _isDetecting = true;
     _prediction.value = 'Scanning road...';
     if (mounted) setState(() {});
 
-    controller.startImageStream((CameraImage image) async {
-      if (_isProcessingFrame || !mounted) return;
-
-      final currentTime = DateTime.now().millisecondsSinceEpoch;
-      if (currentTime - _lastFrameTime < _fpsIntervalMs) return;
-
-      _isProcessingFrame = true;
-      _lastFrameTime = currentTime;
-
-      try {
-        final result = await _tfliteService.predictFrameWithBoxes(image);
-
-        // 🔑 null = الفريم انتخطّى أو الـ worker كان مشغول.
-        // لازم نتجاهله بالكامل، مش نعامله كـ "طريق نظيف"، وإلا
-        // المربعات بترفرف والعدّاد الزمني بيتصفّر كل فريم.
-        if (result == null) return;
-
-        final maxScore = (result['maxScore'] as num?)?.toDouble() ?? 0.0;
-        final count = (result['detections'] as List?)?.length ?? 0;
-        final workerError = result['error']?.toString();
-        _diagnostics.value = workerError == null
-            ? 'AI  score: ${maxScore.toStringAsFixed(3)}  |  boxes: $count  |  ${image.width}×${image.height}'
-            : 'AI ERROR: ${workerError.split('\n').first}';
-
-        // سجل ميداني محدود: يكشف فوراً إن المشكلة عتبة ثقة أم خطأ worker
-        // من دون إغراق logcat بسجل لكل فريم.
-        final now = DateTime.now().millisecondsSinceEpoch;
-        if (now - _lastDiagnosticLogTime >= 2000) {
-          _lastDiagnosticLogTime = now;
-          debugPrint(
-            '🔎 AI diagnostics | maxScore=${maxScore.toStringAsFixed(3)} '
-            '| detections=$count | frame=${image.width}x${image.height}',
-          );
-        }
-
-        final detections = _normalizeDetections(result['detections']);
-        final uiPothole = _pickBestPotholeDetection(
-          detections,
-          minConfidence: _uiConfidenceThreshold,
-        );
-        final reportPothole = _pickBestPotholeDetection(
-          detections,
-          minConfidence: _reportConfidenceThreshold,
-        );
-
-        final String detectedDamage = uiPothole == null
-            ? 'Clear Road'
-            : (uiPothole['label'] as String? ?? 'Pothole');
-
-        // تحديث بدون setState — الـ blur والـ HUD ما بيتعاد بناؤهم
-        _prediction.value = detectedDamage;
-        _detections.value =
-            uiPothole == null ? const [] : <Map<String, dynamic>>[uiPothole];
-
-        if (reportPothole != null) {
-          _potholeFrameStreak++;
-        } else {
-          _potholeFrameStreak = 0;
-        }
-
-        final bool isTemporalConfirmed =
-            _potholeFrameStreak >= _requiredConsecutivePotholeFrames;
-
-        if (isTemporalConfirmed && !_isUploadingReport && !_isReporting) {
-          final bool canReport = _lastReportTime == null ||
-              DateTime.now().difference(_lastReportTime!).inSeconds >
-                  _cooldownSeconds;
-
-          if (canReport) {
-            if (_hasVibrator == true) {
-              Vibration.vibrate(duration: 400);
-            }
-
-            _lastReportTime = DateTime.now();
-            _isReporting = true;
-            _potholeFrameStreak = 0;
-            await _autoSubmitReport(detectedDamage);
-          }
-        }
-      } catch (e) {
-        debugPrint("❌ AI Stream Error: $e");
-      } finally {
-        _isProcessingFrame = false;
-      }
-    });
+    controller.startImageStream(_onCameraFrame);
   }
 
-  Future<void> _autoSubmitReport(String damageType) async {
-    if (mounted) setState(() => _isUploadingReport = true);
-    final isArabic = ApiService.currentLanguage == 'ar';
-    bool streamWasPaused = false;
-
+  void _stopAIDetectionStream({bool notify = true}) {
+    _isDetecting = false;
+    _pendingFrame = null;
     try {
-      Position position;
-      if (_cachedPosition != null) {
-        position = _cachedPosition!;
-        _warmUpGps(); // جدّد بالخلفية للبلاغ القادم
-      } else {
-        try {
-          position = await Geolocator.getCurrentPosition(
-            desiredAccuracy: LocationAccuracy.medium,
-          ).timeout(
-            const Duration(seconds: 15),
-            onTimeout: () => throw TimeoutException('GPS timeout'),
-          );
-          _cachedPosition = position;
-        } catch (e) {
-          final gpsError = e.toString().contains('timeout')
-              ? (isArabic
-                  ? 'انتهت مهلة GPS. تأكد من تفعيله وكونك في الهواء الطلق.'
-                  : 'GPS timed out. Make sure it\'s enabled and you\'re outdoors.')
-              : (isArabic
-                  ? 'تعذّر الحصول على الموقع: $e'
-                  : 'Could not get location: $e');
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('❌ $gpsError'),
-              backgroundColor: Colors.red,
-              behavior: SnackBarBehavior.floating,
-              duration: const Duration(seconds: 4),
-            ));
-          }
-          throw Exception(gpsError);
-        }
-      }
-
       final controller = _cameraController;
-      if (controller == null || !controller.value.isInitialized) {
-        throw Exception('Camera Error: Camera controller not initialized');
+      if (controller != null && controller.value.isStreamingImages) {
+        controller.stopImageStream();
       }
+    } catch (_) {
+      // Stream was not running — ignore.
+    }
+    if (notify && mounted) setState(() {});
+  }
 
-      if (controller.value.isStreamingImages) {
-        await controller.stopImageStream();
-        streamWasPaused = true;
-        await Future.delayed(const Duration(milliseconds: 200));
-      }
+  // ===========================================================================
+  // Hot path
+  // ===========================================================================
 
-      XFile capturedPhoto;
-      try {
-        capturedPhoto = await controller.takePicture().timeout(
-              const Duration(seconds: 5),
-              onTimeout: () => throw TimeoutException('Photo capture timeout'),
-            );
-      } catch (e) {
-        final photoError = e.toString().contains('timeout')
-            ? 'Photo Capture Error: Camera took >5s to capture photo'
-            : 'Photo Capture Error: $e';
-        debugPrint("❌ $photoError");
-        throw Exception(photoError);
-      }
+  /// Camera callback. Must stay tiny: it runs ~30×/s on the UI isolate.
+  void _onCameraFrame(CameraImage image) {
+    _stats.received++;
+    if (!mounted || !_isDetecting) return;
+    _lastFrameW = image.width;
+    _lastFrameH = image.height;
 
-      const int typeId = 1; // pothole فقط
+    if (!_ai.isReady) {
+      _stats.dropped++;
+      return;
+    }
 
-      final bool success = await ApiService.submitReport(
-        photo: capturedPhoto,
-        latitude: position.latitude,
-        longitude: position.longitude,
-        typeId: typeId,
-      ).timeout(
-        const Duration(seconds: 30),
-        onTimeout: () => throw TimeoutException('API request timeout (>30s)'),
-      );
+    if (_ai.isFrameInFlight) {
+      // Keep only the newest frame while the worker is busy.
+      if (_pendingFrame != null) _stats.dropped++;
+      _pendingFrame = image;
+      return;
+    }
+    // Thermal ceiling (see maxProcessFps).
+    final nowUs = DateTime.now().microsecondsSinceEpoch;
+    if (nowUs - _lastDispatchUs < _minDispatchIntervalUs) {
+      _stats.dropped++;
+      return;
+    }
+    _dispatch(image);
+  }
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(success
-              ? (isArabic ? '✅ تم إرسال البلاغ!' : '✅ Report sent!')
-              : (isArabic ? '❌ فشل الإرسال' : '❌ Failed to send')),
-          backgroundColor: success ? Colors.green : Colors.red,
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 2),
-        ));
-      }
-    } catch (e) {
-      final errorMsg = e.toString();
-      debugPrint("❌ Auto-Report Error: $errorMsg");
-
-      String displayError = errorMsg;
-      if (errorMsg.contains('Connection refused')) {
-        displayError = 'Network Error: Cannot connect to server';
-      } else if (errorMsg.contains('timeout')) {
-        displayError = 'Timeout Error: Request took too long';
-      } else if (errorMsg.contains('Socket')) {
-        displayError = 'Network Error: Internet connection lost';
-      } else if (errorMsg.contains('Camera')) {
-        displayError = 'Camera Error: Unable to capture photo';
-      } else if (errorMsg.contains('GPS')) {
-        displayError = 'Location Error: GPS not available';
-      }
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-              isArabic ? '❌ خطأ: $errorMsg' : '❌ Error: $displayError'),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 3),
-        ));
-      }
-    } finally {
-      _isReporting = false;
-      if (mounted &&
-          streamWasPaused &&
-          _isCameraInitialized &&
-          !_isRestartingStream) {
-        _isRestartingStream = true;
-        await Future.delayed(const Duration(milliseconds: 100));
-        _startFastAIDetectionStream();
-        _isRestartingStream = false;
-      }
-      if (mounted) setState(() => _isUploadingReport = false);
+  void _dispatch(CameraImage image) {
+    _updateRotation();
+    if (_ai.sendFrame(image)) {
+      _stats.sent++;
+      _lastDispatchUs = DateTime.now().microsecondsSinceEpoch;
+    } else {
+      _stats.dropped++;
     }
   }
 
-  List<Map<String, dynamic>> _normalizeDetections(dynamic rawDetections) {
-    if (rawDetections is! List || rawDetections.isEmpty) return const [];
+  void _onDetectionResult(DetectionResult result) {
+    if (!mounted) return;
 
-    final normalized = <Map<String, dynamic>>[];
-    for (final item in rawDetections) {
-      if (item is! Map) continue;
-      normalized.add({
-        'x1': (item['x1'] as num?)?.toDouble() ?? 0.0,
-        'y1': (item['y1'] as num?)?.toDouble() ?? 0.0,
-        'x2': (item['x2'] as num?)?.toDouble() ?? 0.0,
-        'y2': (item['y2'] as num?)?.toDouble() ?? 0.0,
-        'conf': (item['conf'] as num?)?.toDouble() ?? 0.0,
-        'label': (item['label'] ?? '').toString(),
-      });
+    // 1) Keep the worker busy: send the newest waiting frame right away.
+    final next = _pendingFrame;
+    _pendingFrame = null;
+    if (next != null && _isDetecting) _dispatch(next);
+
+    // 2) Stats.
+    _stats.addResult(result);
+
+    final error = result.error;
+    if (error != null) {
+      _stats.errors++;
+      _diagnostics.value = 'AI ERROR: ${error.split('\n').first}';
+      _lastDiagnosticLogTime = DateTime.now().millisecondsSinceEpoch;
+      return;
     }
-    return normalized;
+
+    // 3) Detections → UI.
+    final detections = result.toDetectionMaps();
+    final best = _pickBestPotholeDetection(
+      detections,
+      minConfidence: _uiConfidenceThreshold,
+    );
+
+    _prediction.value = best == null
+        ? 'Clear Road'
+        : (best['label'] as String? ?? 'Pothole');
+    _overlay.value = _Overlay(
+      detections: best == null
+          ? const <Map<String, dynamic>>[]
+          : <Map<String, dynamic>>[best],
+      geometry: result.letterbox,
+    );
+
+    // 4) Report policy: time-based episodes, synchronous, no allocation.
+    final policy = _policy ??= ReportTriggerPolicy(
+      inputWidthPx: _ai.modelInfo?.inputWidth ?? 640,
+    );
+    int hitCount = 0;
+    for (final d in detections) {
+      if (((d['conf'] as double?) ?? 0.0) >= policy.tHit &&
+          (d['label'] as String? ?? '').toLowerCase().contains('pothole')) {
+        hitCount++;
+      }
+    }
+    double conf = 0.0, x1 = 0.0, y1 = 0.0, x2 = 0.0, y2 = 0.0;
+    if (best != null) {
+      conf = best['conf'] as double;
+      x1 = best['x1'] as double;
+      y1 = best['y1'] as double;
+      x2 = best['x2'] as double;
+      y2 = best['y2'] as double;
+    }
+    final action = policy.onFrame(
+      nowUs: result.receivedAtUs,
+      frameId: result.id,
+      conf: conf,
+      widthNorm: x2 - x1,
+      cx: (x1 + x2) / 2,
+      cy: (y1 + y2) / 2,
+      hitCount: hitCount,
+    );
+    switch (action) {
+      case PolicyAction.fire:
+        _fireReport(policy);
+      case PolicyAction.episodeEnded:
+        _onEpisodeEnded(policy);
+      case PolicyAction.episodeStarted:
+      case PolicyAction.none:
+        break;
+    }
+
+    // 5) 2-second diagnostics line.
+    _maybeLogDiagnostics(result);
   }
 
   Map<String, dynamic>? _pickBestPotholeDetection(
@@ -423,48 +490,226 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
   }) {
     Map<String, dynamic>? best;
     double bestConf = minConfidence;
-
     for (final d in detections) {
       final label = (d['label'] ?? '').toString().toLowerCase();
-      final conf = (d['conf'] as num?)?.toDouble() ?? 0.0;
       if (!label.contains('pothole')) continue;
+      final conf = (d['conf'] as num?)?.toDouble() ?? 0.0;
       if (conf < bestConf) continue;
-
       best = d;
       bestConf = conf;
     }
-
     return best;
   }
 
-  void _stopAIDetectionStream() {
-    try {
-      final controller = _cameraController;
-      if (controller != null && controller.value.isStreamingImages) {
-        controller.stopImageStream();
-      }
-    } catch (_) {
-      // الستريم ما كان شغال — تجاهل بأمان
+  // ===========================================================================
+  // Reporting — never blocks the stream
+  // ===========================================================================
+
+  /// The policy confirmed an episode. Apply the UI-side guards (busy, floor,
+  /// spatial dedupe); a suppressed fire is recorded on the episode and does
+  /// NOT change policy state, so the same pothole cannot fire again until it
+  /// leaves view.
+  void _fireReport(ReportTriggerPolicy policy) {
+    final ep = policy.episode;
+    _fillGpsContext(ep);
+
+    if (_snapshotInFlight) {
+      ep.suppressMask |= SuppressReason.busy;
+      return;
     }
-    if (mounted) setState(() => _isDetecting = false);
+    if (!_ai.isReady) {
+      ep.suppressMask |= SuppressReason.noWorker;
+      return;
+    }
+    final nowUs = DateTime.now().microsecondsSinceEpoch;
+    if (_lastReportUs != 0 &&
+        nowUs - _lastReportUs < _minReportIntervalMs * 1000) {
+      ep.suppressMask |= SuppressReason.cooldown;
+      return;
+    }
+    final fix = _projectedFix();
+    ep.fixSource = fix?.source ?? 'none';
+    if (fix != null && _isNearRecentReport(fix)) {
+      ep.suppressMask |= SuppressReason.dedupe;
+      return;
+    }
+
+    _snapshotInFlight = true;
+    _lastReportUs = nowUs;
+    _stats.reports++;
+
+    if (_hasVibrator == true) {
+      unawaited(Vibration.vibrate(duration: 400));
+    }
+    unawaited(_captureAndEnqueue(fix, ep));
   }
 
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
+  void _fillGpsContext(Episode ep) {
+    final p = _latestFix;
+    if (p == null) return;
+    ep.speedMps = p.speed;
+    ep.gpsAccuracyM = p.accuracy;
+    ep.headingDeg = p.heading;
+  }
+
+  void _onEpisodeEnded(ReportTriggerPolicy policy) {
+    final ep = policy.episode;
+    if (ep.speedMps.isNaN) _fillGpsContext(ep);
+    final String result;
+    if (ep.reported && ep.suppressMask == 0) {
+      result = 'reported';
+    } else if (ep.reported) {
+      result = 'suppressed:${SuppressReason.describe(ep.suppressMask)}';
+    } else {
+      result = 'unconfirmed:${policy.unconfirmedReasons().join(',')}';
+    }
+    _episodeLog.write(policy, result: result, modelBackend: _ai.activeBackend);
+  }
+
+  Future<void> _captureAndEnqueue(_GeoPoint? fix, Episode ep) async {
+    try {
+      final jpeg = await _ai.requestSnapshot();
+      if (jpeg == null) {
+        ep.suppressMask |= SuppressReason.noSnapshot;
+        debugPrint('⚠️ Report skipped: no snapshot from worker');
+        return;
+      }
+      if (fix != null) {
+        _recentReportFixes.add(fix);
+        if (_recentReportFixes.length > _maxRecentFixes) {
+          _recentReportFixes.removeAt(0);
+        }
+      } else {
+        debugPrint('⚠️ Report without GPS fix (${_gpsStatus ?? 'no fix yet'})');
+      }
+      await _uploads.enqueue(
+        PendingReport(
+          jpeg: jpeg,
+          capturedAt: DateTime.now(),
+          latitude: fix?.lat,
+          longitude: fix?.lon,
+        ),
+      );
+    } catch (e) {
+      debugPrint('❌ Report capture failed: $e');
+    } finally {
+      _snapshotInFlight = false;
+    }
+  }
+
+  void _onUploadOutcome() {
+    final outcome = _uploads.lastOutcome.value;
+    if (outcome == null || !mounted) return;
+    final isArabic = ApiService.currentLanguage == 'ar';
+    final detail = outcome.message == null ? '' : ': ${outcome.message}';
+    final (String text, Color color) = switch (outcome.kind) {
+      ReportOutcomeKind.sent => (
+          isArabic ? '✅ تم إرسال البلاغ!' : '✅ Report sent!',
+          Colors.green,
+        ),
+      ReportOutcomeKind.savedOffline => (
+          isArabic ? '📦 حُفظ البلاغ بدون اتصال' : '📦 Report saved offline',
+          Colors.orange,
+        ),
+      ReportOutcomeKind.noLocation => (
+          isArabic ? '📍 حُفظ البلاغ بدون موقع' : '📍 Saved without location',
+          Colors.orange,
+        ),
+      ReportOutcomeKind.failed => (
+          isArabic ? '❌ فشل الإرسال$detail' : '❌ Failed to send$detail',
+          Colors.red,
+        ),
+    };
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(text),
+        backgroundColor: color,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // Diagnostics
+  // ===========================================================================
+
+  void _onFrameTimings(List<FrameTiming> timings) {
+    for (final t in timings) {
+      _stats.uiFrames++;
+      if (t.totalSpan.inMicroseconds > 16700) _stats.jank++;
+    }
+  }
+
+  void _maybeLogDiagnostics(DetectionResult result) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_lastDiagnosticLogTime == 0) {
+      _lastDiagnosticLogTime = now;
+      return;
+    }
+    final windowMs = now - _lastDiagnosticLogTime;
+    if (windowMs < 2000) return;
+    _lastDiagnosticLogTime = now;
+
+    final policy = _policy;
+    final episodeInfo = policy == null
+        ? null
+        : 'ep:${policy.state.name} hit:${policy.episode.hitMs.round()}ms '
+            'peak:${policy.episode.peak.toStringAsFixed(2)}';
+    final line = _stats.summarize(
+      windowMs: windowMs,
+      backend: result.backend,
+      frameSize: '${_lastFrameW}x$_lastFrameH',
+      maxScore: result.maxScore,
+      boxes: result.count,
+      gpsStatus: _gpsStatus,
+      episode: episodeInfo,
+    );
+    _diagnostics.value = line;
+    debugPrint('🔎 $line');
+    _stats.resetWindow();
+  }
+
+  /// Bench harness: long-press the AI panel to cycle model asset × backend.
+  /// Order: (asset0, GPU) → (asset0, CPU) → (asset1, GPU) → …
+  Future<void> _cycleBenchConfig() async {
+    final assets = TFLiteService.benchModelAssets;
+    final idx = math.max(0, assets.indexOf(_ai.modelAsset));
+    final String nextAsset;
+    final bool nextGpu;
+    if (_ai.preferGpu) {
+      nextAsset = assets[idx];
+      nextGpu = false;
+    } else {
+      nextAsset = assets[(idx + 1) % assets.length];
+      nextGpu = true;
+    }
+
     _stopAIDetectionStream();
-    _cameraController?.dispose();
-    _tfliteService.dispose();
-    _detections.dispose();
-    _prediction.dispose();
-    _diagnostics.dispose();
-    super.dispose();
+    _diagnostics.value =
+        'AI | restarting → ${nextAsset.split('/').last} '
+        '(${nextGpu ? 'GPU first' : 'CPU only'})…';
+    await _ai.restart(modelAsset: nextAsset, preferGpu: nextGpu);
+    if (!mounted) return;
+    _policy = null; // model input size may differ
+    _stats.resetWindow();
+    _lastDiagnosticLogTime = 0;
+    final error = _ai.diagnosticError;
+    if (error != null) {
+      _diagnostics.value = 'AI ERROR: $error';
+      return;
+    }
+    _startFastAIDetectionStream();
   }
 
   String _getArabicLabel(String englishLabel) {
     if (englishLabel.toLowerCase().contains('pothole')) return 'حفرة';
     return englishLabel;
   }
+
+  // ===========================================================================
+  // UI
+  // ===========================================================================
 
   @override
   Widget build(BuildContext context) {
@@ -479,25 +724,43 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
             Stack(
               fit: StackFit.expand,
               children: [
+                // The preview widget rotates itself to the device
+                // orientation, so the box we fit it into must follow the
+                // same orientation or the boxes drawn on top will not line
+                // up. previewSize is reported in sensor (landscape) terms.
                 Positioned.fill(
-                  child: ClipRect(
-                    child: FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        width: _cameraController!.value.previewSize!.height,
-                        height: _cameraController!.value.previewSize!.width,
-                        child: CameraPreview(_cameraController!),
-                      ),
-                    ),
+                  child: ValueListenableBuilder<CameraValue>(
+                    valueListenable: _cameraController!,
+                    builder: (_, value, _) {
+                      final size = value.previewSize;
+                      if (size == null) return const SizedBox.shrink();
+                      final landscape = value.deviceOrientation ==
+                              DeviceOrientation.landscapeLeft ||
+                          value.deviceOrientation ==
+                              DeviceOrientation.landscapeRight;
+                      return ClipRect(
+                        child: FittedBox(
+                          fit: BoxFit.cover,
+                          child: SizedBox(
+                            width: landscape ? size.width : size.height,
+                            height: landscape ? size.height : size.width,
+                            child: CameraPreview(_cameraController!),
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
-                // يُعاد رسمه فقط عند تغيّر المربعات — مش مع كل rebuild
+                // Repaints only when the boxes change.
                 Positioned.fill(
-                  child: ValueListenableBuilder<List<Map<String, dynamic>>>(
-                    valueListenable: _detections,
-                    builder: (_, detections, __) => CustomPaint(
+                  child: ValueListenableBuilder<_Overlay>(
+                    valueListenable: _overlay,
+                    builder: (_, overlay, _) => CustomPaint(
                       size: Size.infinite,
-                      painter: BoundingBoxPainter(detections: detections),
+                      painter: BoundingBoxPainter(
+                        detections: overlay.detections,
+                        geometry: overlay.geometry,
+                      ),
                     ),
                   ),
                 ),
@@ -520,38 +783,9 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
               ),
             ),
 
-           _buildTopBar(isArabic),
-           _buildDiagnosticsPanel(),
-
-          if (_isUploadingReport)
-            Positioned(
-              right: 24,
-              top: 268,
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(30),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          color: Colors.orange, strokeWidth: 2),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      isArabic ? 'جاري الرفع...' : 'Uploading...',
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
+          _buildTopBar(isArabic),
+          _buildDiagnosticsPanel(),
+          _buildUploadPill(isArabic),
           _buildHud(isArabic),
         ],
       ),
@@ -607,7 +841,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      isArabic ? "تحليل مباشر" : "LIVE AI",
+                      isArabic ? 'تحليل مباشر' : 'LIVE AI',
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
@@ -624,199 +858,98 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     );
   }
 
-  /// سجل تشخيص ظاهر على الهاتف: يبين الـ backend المختار، محاولات GPU / NNAPI
-  /// / CPU، وآخر خطأ مختصر. بهذا يمكن اختبار الجهاز ميدانياً بلا USB.
+  /// On-device log: backend chosen, GPU/CPU attempts, and the 2-second
+  /// performance line. Long-press to cycle model/backend (bench harness).
   Widget _buildDiagnosticsPanel() {
     return Positioned(
       top: 126,
       left: 16,
       right: 16,
-      child: ValueListenableBuilder<List<String>>(
-        valueListenable: _tfliteService.diagnosticEvents,
-        builder: (_, events, __) => ValueListenableBuilder<String>(
-          valueListenable: _diagnostics,
-          builder: (_, summary, __) {
-            final hasError = summary.startsWith('AI ERROR') ||
-                events.any((event) => event.contains('ERROR'));
-            return Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              decoration: BoxDecoration(
-                color: hasError
-                    ? Colors.red.withValues(alpha: 0.86)
-                    : Colors.black.withValues(alpha: 0.74),
-                borderRadius: BorderRadius.circular(10),
-                border:
-                    Border.all(color: Colors.white.withValues(alpha: 0.18)),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        hasError
-                            ? Icons.error_outline_rounded
-                            : Icons.memory_rounded,
-                        color: hasError ? Colors.white : const Color(0xFFFFD700),
-                        size: 16,
-                      ),
-                      const SizedBox(width: 6),
-                      const Text(
-                        'AI device log — no USB needed',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    summary,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontFamily: 'monospace',
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  if (events.isNotEmpty) ...[
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 6),
-                      child: Divider(height: 1, color: Colors.white30),
-                    ),
-                    for (final event in events)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1),
-                        child: Text(
-                          event,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          textDirection: TextDirection.ltr,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontFamily: 'monospace',
-                            fontSize: 10,
-                            height: 1.2,
-                          ),
-                        ),
-                      ),
-                  ],
-                ],
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  /// الـ HUD: الـ BackdropFilter (blur) مبني مرة وحدة برا الـ builder،
-  /// وبس المحتوى الداخلي بيتحدّث مع تغيّر النتيجة.
-  Widget _buildHud(bool isArabic) {
-    return Positioned(
-      bottom: 40,
-      left: 24,
-      right: 24,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(24),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
-          child: ValueListenableBuilder<String>(
-            valueListenable: _prediction,
-            builder: (_, prediction, __) {
-              final dmg = prediction.toLowerCase();
-              final isHazardDetected = dmg.contains('pothole');
-              final hudColor =
-                  isHazardDetected ? Colors.redAccent : const Color(0xFFFFD700);
-              final hudIcon = isHazardDetected
-                  ? Icons.warning_amber_rounded
-                  : Icons.radar;
-
-              String displayText = prediction;
-              if (prediction.isNotEmpty && prediction != 'Scanning road...') {
-                displayText = prediction[0].toUpperCase() +
-                    prediction.substring(1).toLowerCase();
-              }
-              if (isArabic) {
-                displayText = isHazardDetected
-                    ? _getArabicLabel(prediction)
-                    : 'جاري مسح الطريق...';
-              }
-
-              return AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                padding: const EdgeInsets.all(20),
+      child: GestureDetector(
+        onLongPress: _cycleBenchConfig,
+        child: ValueListenableBuilder<List<String>>(
+          valueListenable: _ai.diagnosticEvents,
+          builder: (_, events, _) => ValueListenableBuilder<String>(
+            valueListenable: _diagnostics,
+            builder: (_, summary, _) {
+              final hasError = summary.startsWith('AI ERROR') ||
+                  events.any((event) => event.contains('ERROR'));
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: isHazardDetected
-                        ? [
-                            Colors.red.withValues(alpha: 0.34),
-                            Colors.black.withValues(alpha: 0.78),
-                          ]
-                        : [
-                            const Color(0xFF1E1E1E).withValues(alpha: 0.78),
-                            Colors.black.withValues(alpha: 0.55),
-                          ],
-                  ),
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(
-                      color: hudColor.withValues(alpha: 0.55), width: 1.8),
+                  color: hasError
+                      ? Colors.red.withValues(alpha: 0.86)
+                      : Colors.black.withValues(alpha: 0.74),
+                  borderRadius: BorderRadius.circular(10),
+                  border:
+                      Border.all(color: Colors.white.withValues(alpha: 0.18)),
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(hudIcon, color: hudColor, size: 34),
-                        const SizedBox(width: 10),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: hudColor.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(999),
-                            border: Border.all(
-                                color: hudColor.withValues(alpha: 0.35)),
-                          ),
+                        Icon(
+                          hasError
+                              ? Icons.error_outline_rounded
+                              : Icons.memory_rounded,
+                          color:
+                              hasError ? Colors.white : const Color(0xFFFFD700),
+                          size: 16,
+                        ),
+                        const SizedBox(width: 6),
+                        const Expanded(
                           child: Text(
-                            isArabic ? 'مباشر' : 'LIVE',
+                            'AI device log — long-press to switch model/backend',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              color: hudColor,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1.1,
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 5),
                     Text(
-                      displayText,
-                      style: TextStyle(
-                          color: hudColor,
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.center,
+                      summary,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.left,
+                      textDirection: TextDirection.ltr,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      isArabic
-                          ? 'معالجة عالية السرعة تعمل في الخلفية'
-                          : 'Zero-lag background processing active',
-                      style:
-                          const TextStyle(color: Colors.white54, fontSize: 14),
-                      textAlign: TextAlign.center,
-                    ),
+                    if (events.isNotEmpty) ...[
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 6),
+                        child: Divider(height: 1, color: Colors.white30),
+                      ),
+                      for (final event in events)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 1),
+                          child: Text(
+                            event,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textDirection: TextDirection.ltr,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontFamily: 'monospace',
+                              fontSize: 10,
+                              height: 1.2,
+                            ),
+                          ),
+                        ),
+                    ],
                   ],
                 ),
               );
@@ -825,5 +958,276 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
         ),
       ),
     );
+  }
+
+  /// Shows how many reports are queued/uploading. Detection keeps running.
+  Widget _buildUploadPill(bool isArabic) {
+    return ValueListenableBuilder<int>(
+      valueListenable: _uploads.pending,
+      builder: (_, pending, _) {
+        if (pending <= 0) return const SizedBox.shrink();
+        return Positioned(
+          right: 24,
+          top: 268,
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      color: Colors.orange, strokeWidth: 2),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  isArabic
+                      ? 'جاري الرفع ($pending)...'
+                      : 'Uploading ($pending)...',
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// HUD. No BackdropFilter: a blur over a live preview is re-rasterised on
+  /// every camera frame and was one of the most expensive things on screen.
+  Widget _buildHud(bool isArabic) {
+    return Positioned(
+      bottom: 40,
+      left: 24,
+      right: 24,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: ValueListenableBuilder<String>(
+          valueListenable: _prediction,
+          builder: (_, prediction, _) {
+            final dmg = prediction.toLowerCase();
+            final isHazardDetected = dmg.contains('pothole');
+            final hudColor =
+                isHazardDetected ? Colors.redAccent : const Color(0xFFFFD700);
+            final hudIcon =
+                isHazardDetected ? Icons.warning_amber_rounded : Icons.radar;
+
+            String displayText = prediction;
+            if (prediction.isNotEmpty && prediction != 'Scanning road...') {
+              displayText = prediction[0].toUpperCase() +
+                  prediction.substring(1).toLowerCase();
+            }
+            if (isArabic) {
+              displayText = isHazardDetected
+                  ? _getArabicLabel(prediction)
+                  : 'جاري مسح الطريق...';
+            }
+
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: isHazardDetected
+                      ? [
+                          Colors.red.withValues(alpha: 0.55),
+                          Colors.black.withValues(alpha: 0.88),
+                        ]
+                      : [
+                          const Color(0xFF1E1E1E).withValues(alpha: 0.9),
+                          Colors.black.withValues(alpha: 0.8),
+                        ],
+                ),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(
+                    color: hudColor.withValues(alpha: 0.55), width: 1.8),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(hudIcon, color: hudColor, size: 34),
+                      const SizedBox(width: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: hudColor.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                              color: hudColor.withValues(alpha: 0.35)),
+                        ),
+                        child: Text(
+                          isArabic ? 'مباشر' : 'LIVE',
+                          style: TextStyle(
+                            color: hudColor,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.1,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    displayText,
+                    style: TextStyle(
+                        color: hudColor,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    isArabic
+                        ? 'المعالجة تعمل في الخلفية — البلاغات تُرفع بدون توقف الكشف'
+                        : 'Background processing — reports upload without pausing detection',
+                    style:
+                        const TextStyle(color: Colors.white54, fontSize: 13),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+/// What the painter draws: the current boxes plus the letterbox geometry
+/// needed to place them on the preview. Value-equal so repeated "clear road"
+/// frames do not trigger repaints.
+class _Overlay {
+  const _Overlay({required this.detections, required this.geometry});
+  const _Overlay.empty()
+      : detections = const <Map<String, dynamic>>[],
+        geometry = null;
+
+  final List<Map<String, dynamic>> detections;
+  final LetterboxGeometry? geometry;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! _Overlay) return false;
+    if (other.geometry != geometry) return false;
+    if (other.detections.length != detections.length) return false;
+    for (int i = 0; i < detections.length; i++) {
+      final a = detections[i], b = other.detections[i];
+      if (a['x1'] != b['x1'] ||
+          a['y1'] != b['y1'] ||
+          a['x2'] != b['x2'] ||
+          a['y2'] != b['y2'] ||
+          a['conf'] != b['conf'] ||
+          a['label'] != b['label']) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hash(detections.length, geometry);
+}
+
+class _GeoPoint {
+  const _GeoPoint(this.lat, this.lon, {this.source = 'raw'});
+  final double lat;
+  final double lon;
+
+  /// `moving` (projected by speed and heading), `stopped` (look-ahead along
+  /// the last moving heading) or `raw` (no heading known).
+  final String source;
+}
+
+/// Per-window counters behind the 2-second diagnostics line. Only ints are
+/// touched per frame; formatting happens twice a second at most.
+class _FrameStats {
+  int received = 0;
+  int sent = 0;
+  int dropped = 0;
+  int processed = 0;
+  int errors = 0;
+  int reports = 0;
+  int sumPreUs = 0;
+  int sumSetUs = 0;
+  int sumInvUs = 0;
+  int sumPostUs = 0;
+  int sumTotalUs = 0;
+  int sumRoundTripUs = 0;
+  int uiFrames = 0;
+  int jank = 0;
+
+  void addResult(DetectionResult r) {
+    processed++;
+    sumPreUs += r.preprocessUs;
+    sumSetUs += r.setInputUs;
+    sumInvUs += r.invokeUs;
+    sumPostUs += r.postprocessUs;
+    sumTotalUs += r.totalUs;
+    sumRoundTripUs += r.roundTripUs;
+  }
+
+  void resetWindow() {
+    received = 0;
+    sent = 0;
+    dropped = 0;
+    processed = 0;
+    errors = 0;
+    reports = 0;
+    sumPreUs = 0;
+    sumSetUs = 0;
+    sumInvUs = 0;
+    sumPostUs = 0;
+    sumTotalUs = 0;
+    sumRoundTripUs = 0;
+    uiFrames = 0;
+    jank = 0;
+  }
+
+  String summarize({
+    required int windowMs,
+    required String backend,
+    required String frameSize,
+    required double maxScore,
+    required int boxes,
+    String? gpsStatus,
+    String? episode,
+  }) {
+    final seconds = windowMs <= 0 ? 1.0 : windowMs / 1000.0;
+    final procFps = processed / seconds;
+    final camFps = received / seconds;
+    final dropPct = received == 0 ? 0 : (dropped * 100 / received).round();
+    int ms(int sumUs) => processed == 0 ? 0 : (sumUs / processed / 1000).round();
+
+    final buffer = StringBuffer()
+      ..write('AI $backend | proc ${procFps.toStringAsFixed(1)} fps ')
+      ..write('(cam ${camFps.toStringAsFixed(1)}, drop $dropPct%) | ')
+      ..write('pre ${ms(sumPreUs)} set ${ms(sumSetUs)} inv ${ms(sumInvUs)} ')
+      ..write('post ${ms(sumPostUs)} | total ${ms(sumTotalUs)} ')
+      ..write('rt ${ms(sumRoundTripUs)} ms | jank $jank/$uiFrames | ')
+      ..write('$frameSize | score ${maxScore.toStringAsFixed(2)} boxes $boxes');
+    if (episode != null) buffer.write(' | $episode');
+    if (reports > 0) buffer.write(' | reports $reports');
+    if (errors > 0) buffer.write(' | errors $errors');
+    if (gpsStatus != null) buffer.write(' | $gpsStatus');
+    return buffer.toString();
   }
 }

@@ -1,94 +1,174 @@
 """
 export_model.py
 ================
-يصدّر 3 نسخ لـ LiteRT (.tflite) للمقارنة بينهم فعلياً على التطبيق:
+يصدّر نسخ LiteRT (.tflite) من best.pt لمقارنتها فعلياً على الهاتف.
 
-  1) FP32       (best_fp32.tflite)   — الأساس، بيشتغل FP16 تلقائياً وقت التشغيل لو GPU delegate شغال
-  2) w8a32 INT8 (best_w8a32.tflite)  — تكميم ديناميكي (أوزان بس)، بدون داتا سيت معايرة، وسط بالسرعة/الدقة
-  3) INT8 ثابت  (best_int8.tflite)   — تكميم PTQ مباشر (بمعايرة data=)، الأسرع والأصغر
+الاسم الموحّد للملفات (التطبيق يعتمد عليه):
+    pothole_yolo26n_<imgsz>_<precision>[_raw].tflite
 
-⚠️ تصحيح مهم: ما في QAT (quantize=8 أثناء model.train) هون — QAT بصيغة Ultralytics الحالية
-   مدعوم بس لصادرات onnx و engine (TensorRT)، ومرفوض تماماً لـ litert (AssertionError صريح
-   بكود Ultralytics نفسه). INT8 لـ litert بيصير حصراً عبر PTQ مباشر وقت التصدير (quantize=8 + data=)
-   من best.pt الأصلي مباشرة، بدون أي خطوة تدريب إضافية قبله.
+المصفوفة (راجع الخطة في التطبيق — TFLiteService.benchModelAssets):
 
-⚠️ ملاحظة سابقة لسا صحيحة: ما في "float16.tflite" منفصل بصيغة litert — أي FP32 export بيشتغل
-   تلقائياً بدقة FP16 وقت التشغيل عبر GPU delegate (WebGPU/OpenCL/Metal).
-   (quantize لـ litert بيقبل بس: 8, 'w8a16', 'w8a32', أو None/32 — مو 16)
+  E1  416 e2e   fp32   pothole_yolo26n_416_fp32.tflite
+      نفس شكل المخرج الحالي [1, 300, 6] — بدون أي تغيير بالـ parser.
+      ذيل top-k (TOPK_V2/GATHER/CAST) غالباً يبقى على CPU مع GPU delegate.
 
-مهم جداً: nms=False → الموديل يرجّع المخرج الخام (1, nc+4, N)، وغالباً
-(1, 5, 8400) عند وجود class واحد. التطبيق يفكّه ويطبق NMS يدوياً في Dart.
-أما nms=True فهو الذي يضيف NMS إلى الموديل ويعطي مخرجاً end-to-end مثل
-(1, 300, 6). نحافظ على nms=False لأنه أبسط وأكثر قابلية للنقل بين CPU/GPU/
-NNAPI، خصوصاً مع موديل W8A32.
+  E2  416 raw   fp32   pothole_yolo26n_416_fp32_raw.tflite   ← المرشّح الأول للشحن
+      رأس one-to-one مع حذف الـ postprocess → [1, anchors, 4+nc]
+      (xyxy بالبكسل + درجات الفئات). كل الـ graph مدعوم على GPU، وبدون NMS:
+      YOLO26 يعطي صندوقاً واحداً لكل جسم، فيكفي فلتر ثقة (+ NMS خفيف احتياطي).
+
+  E3  320 raw   fp32   pothole_yolo26n_320_fp32_raw.tflite
+      احتياط للأجهزة الضعيفة (Snapdragon 6xx) إذا 416 ما وصلت ≥ 8 FPS.
+
+  E4  416 raw   int8   pothole_yolo26n_416_int8_raw.tflite
+      تكميم PTQ كامل بمعايرة — للأجهزة التي تعمل على CPU فقط (XNNPACK int8
+      أسرع 1.5–2.5×). لا يفيد مسار GPU (الـ GPU يفكّ التكميم).
+
+  E5  640 e2e   fp32   pothole_yolo26n_640_fp32.tflite
+      الأساس الحالي — للمقارنة بالدقة فقط، بطيء جداً على CPU.
+
+ملاحظات مهمة:
+  * YOLO26 بدون NMS أصلاً (NMS-free). nms=False *لا* يعطي المخرج الخام
+    [1, nc+4, N] كما كان مكتوباً هنا سابقاً؛ رأس end-to-end يمرّ عبر
+    Detect.postprocess (top-k) ويعطي [1, max_det, 6]. للحصول على raw
+    نُعطّل postprocess نفسه (انظر _strip_postprocess).
+  * format="litert" (ai-edge-torch) يحافظ على NCHW [1,3,H,W].
+    format="tflite" (onnx2tf) يعطي NHWC [1,H,W,3] وهو أنسب لـ GPU delegate.
+    التطبيق يدعم الاثنين تلقائياً. نجرب "tflite" أولاً ونرجع لـ "litert"
+    إذا لم تتوفر أدوات onnx2tf.
+  * QAT غير مدعوم لـ litert في Ultralytics الحالي؛ INT8 = PTQ وقت التصدير.
+  * بعد التصدير افحص كل ملف بـ:  python ../assets/check_model.py <file>
+    (يطبع الشكل، العمليات غير المدعومة على GPU، وزمن invoke).
+
+الاستخدام:
+    python export_model.py            # كل المصفوفة
+    python export_model.py E2 E3      # مجموعة فرعية
+    python export_model.py --val      # + تقييم mAP عند 640/416/320
 """
 
+from __future__ import annotations
+
+import shutil
+import sys
 from pathlib import Path
 
 from ultralytics import YOLO
 
 BEST_PT = "../rased_training/rased_yolo26/v1_yolo26n/weights/best.pt"
 DATA_YAML = "../rased_training/merged_dataset/data.yaml"
-IMGSZ = 640
 OUTPUT_DIR = Path("./exported_models")
-OUTPUT_DIR.mkdir(exist_ok=True)
+ARCH = "yolo26n"
+
+# (name, imgsz, raw, precision)
+MATRIX: dict[str, tuple[int, bool, str]] = {
+    "E1": (416, False, "fp32"),
+    "E2": (416, True, "fp32"),
+    "E3": (320, True, "fp32"),
+    "E4": (416, True, "int8"),
+    "E5": (640, False, "fp32"),
+}
 
 
-def export_fp32():
-    print("📦 تصدير FP32 (بدون تكميم — بيشتغل FP16 تلقائياً على GPU delegate)...")
+def _target_name(imgsz: int, raw: bool, precision: str) -> str:
+    suffix = "_raw" if raw else ""
+    return f"pothole_{ARCH}_{imgsz}_{precision}{suffix}.tflite"
+
+
+def _strip_postprocess() -> None:
+    """يجعل Detect.postprocess هوية: المخرج يصبح [1, anchors, 4+nc]
+    (xyxy بالبكسل + درجات sigmoid) بدون TOPK/GATHER/CAST."""
+    from ultralytics.nn.modules import head
+
+    head.Detect.postprocess = staticmethod(lambda preds, max_det, nc=80: preds)
+    print("   ↳ Detect.postprocess = identity (raw one-to-one output)")
+
+
+def _export(imgsz: int, raw: bool, precision: str) -> Path:
+    target = OUTPUT_DIR / _target_name(imgsz, raw, precision)
+    print(f"\n📦 {target.name}  (imgsz={imgsz}, raw={raw}, {precision})")
+
     model = YOLO(BEST_PT)
-    path = model.export(
-        format="litert",
-        imgsz=IMGSZ,
-        quantize=None,  # FP32 — القيمة الافتراضية لـ litert
-        nms=False,      # raw [1, nc + 4, N]؛ التطبيق يطبق NMS يدوياً
+    if raw:
+        _strip_postprocess()
+
+    exported: str | None = None
+    # NHWC عبر onnx2tf أولاً (أفضل لـ GPU delegate)، ثم litert (NCHW).
+    for fmt in ("tflite", "litert"):
+        kwargs: dict = {"imgsz": imgsz, "nms": False}
+        if precision == "int8":
+            # tflite (onnx2tf): int8=True + data ; litert (ai-edge-torch): quantize=8 + data
+            if fmt == "tflite":
+                kwargs.update(int8=True, data=DATA_YAML)
+            else:
+                kwargs.update(quantize=8, data=DATA_YAML)
+        elif precision == "fp16":
+            kwargs.update(half=True)
+        try:
+            print(f"   → format={fmt}")
+            exported = model.export(format=fmt, **kwargs)
+            break
+        except Exception as e:  # noqa: BLE001 — نجرب الصيغة التالية
+            print(f"   ⚠️ format={fmt} فشل: {type(e).__name__}: {e}")
+    if exported is None:
+        raise RuntimeError(f"تعذّر تصدير {target.name} بأي صيغة")
+
+    exported_path = Path(exported)
+    if exported_path.is_dir():
+        # onnx2tf يعطي مجلد saved_model مع ملفات .tflite بداخله
+        candidates = sorted(exported_path.glob("*.tflite"))
+        wanted = [c for c in candidates if precision in c.name.lower()] or candidates
+        if not wanted:
+            raise RuntimeError(f"لا يوجد .tflite داخل {exported_path}")
+        exported_path = wanted[0]
+
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    shutil.copyfile(exported_path, target)
+    print(f"   ✅ {target}  ({target.stat().st_size / 1e6:.1f} MB)")
+    return target
+
+
+def _validate(sizes=(640, 416, 320)) -> None:
+    print("\n📊 تقييم mAP على مجموعة التحقق لكل حجم إدخال:")
+    for s in sizes:
+        model = YOLO(BEST_PT)
+        metrics = model.val(data=DATA_YAML, imgsz=s, verbose=False)
+        print(
+            f"   imgsz={s}: mAP50={metrics.box.map50:.3f}  "
+            f"mAP50-95={metrics.box.map:.3f}"
+        )
+    print(
+        "   ↳ إذا الهبوط عند 416 غير مقبول: fine-tune best.pt ~20 epoch بـ "
+        "imgsz=416 (train_yolo26.py) — موديل مدرَّب على حجم الاستدلال أدق."
     )
-    print(f"   ✅ {path}")
-    return path
-
-
-def export_w8a32_dynamic():
-    print("\n📦 تصدير w8a32 (INT8 ديناميكي — أوزان بس، بدون معايرة)...")
-    model = YOLO(BEST_PT)
-    path = model.export(
-        format="litert",
-        imgsz=IMGSZ,
-        quantize="w8a32",  # INT8 أوزان + FP32 activations، ما بيحتاج data= للمعايرة
-        nms=False,
-    )
-    print(f"   ✅ {path}")
-    return path
-
-
-def export_int8_static():
-    print("\n📦 تصدير INT8 ثابت (PTQ مباشر بمعايرة — بدون QAT)...")
-    model = YOLO(BEST_PT)  # نفس best.pt الأصلي — بدون أي تدريب إضافي قبله
-    path = model.export(
-        format="litert",
-        imgsz=IMGSZ,
-        quantize=8,
-        data=DATA_YAML,  # للمعايرة (calibration) — إلزامي لـ static INT8
-        nms=False,
-    )
-    print(f"   ✅ {path}")
-    return path
 
 
 if __name__ == "__main__":
-    fp32_path = export_fp32()
-    w8a32_path = export_w8a32_dynamic()
-    int8_path = export_int8_static()
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    selected = args or list(MATRIX)
 
-    print("\n" + "=" * 60)
-    print("✅ الملفات الثلاث جاهزة للمقارنة — انسخوا اللي بدكم تجربوه لـ assets/ بالتطبيق:")
-    print(f"   {fp32_path}   →  assets/best_fp32.tflite   (الأدق، الأثقل)")
-    print(f"   {w8a32_path}  →  assets/best_w8a32.tflite  (وسط)")
-    print(f"   {int8_path}   →  assets/best_int8.tflite   (الأسرع — توقعنا نستخدم هاد بالنهاية)")
-    print("=" * 60)
-    print("\n⚠️  قبل ما تنسخوا أي وحدة: افحصوا شكل الـ output tensor:")
-    print("    nms=False → raw (1, nc + 4, N)؛ nms=True → end-to-end (1, 300, 6)")
-    print("    from ultralytics import YOLO")
-    print(f"    m = YOLO('{int8_path}')")
-    print("    print(m.model.overrides)  # أو افحصوا بـ TFLite interpreter مباشرة")
-    print("\n📝 تذكير: التطبيق الحالي يستخدم 'assets/best_w8a32.tflite'.")
-    print("    لو بدك تجرب fp32 أو int8 بالتطبيق فعلياً، غيّر _modelAsset وpubspec.yaml معاً.")
+    produced: list[Path] = []
+    for key in selected:
+        if key not in MATRIX:
+            print(f"⚠️ تجاهل {key}: غير معروف. المتاح: {', '.join(MATRIX)}")
+            continue
+        imgsz, raw, precision = MATRIX[key]
+        try:
+            produced.append(_export(imgsz, raw, precision))
+        except Exception as e:  # noqa: BLE001
+            print(f"   ❌ {key} فشل: {e}")
+
+    if "--val" in flags:
+        _validate()
+
+    print("\n" + "=" * 64)
+    print("✅ الملفات الجاهزة — انسخ ما تريد تجربته إلى assets/ بالتطبيق:")
+    for p in produced:
+        print(f"   {p}")
+    print("=" * 64)
+    print("\nخطوات بالتطبيق لكل ملف تجرّبه:")
+    print("  1) python ../assets/check_model.py <file>   ← شكل المخرج + العمليات + الزمن")
+    print("  2) أضفه إلى pubspec.yaml (flutter: assets:) وإلى")
+    print("     TFLiteService.benchModelAssets، ثم long-press على لوحة AI بالكاميرا")
+    print("     للتبديل بين الموديلات و GPU/CPU وقراءة سطر الأداء كل ثانيتين.")
+    print("  3) عند اختيار الفائز: اجعله TFLiteService.defaultModelAsset واحذف البقية.")

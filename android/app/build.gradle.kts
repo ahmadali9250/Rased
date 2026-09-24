@@ -30,6 +30,12 @@ android {
         versionName = flutter.versionName
     }
 
+    androidResources {
+        // Keep .tflite assets uncompressed so the model can be memory-mapped
+        // and loads faster at startup.
+        noCompress.add("tflite")
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.

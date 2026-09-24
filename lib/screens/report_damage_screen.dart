@@ -33,7 +33,8 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
 
   File? _selectedImage;
   final ImagePicker _picker = ImagePicker();
-  final TFLiteService _tfliteService = TFLiteService(); // Local AI verification
+  // Shared background AI worker (same instance as the live camera screen).
+  final TFLiteService _tfliteService = TFLiteService.instance;
 
   String _currentAddress = "Locating your position...";
   double? _currentLat;
@@ -49,15 +50,14 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
   void initState() {
     super.initState();
     // Warm up the local AI model so it's ready to analyze the manual photo instantly
-    _tfliteService.initializeModel();
+    _tfliteService.initialize();
     _getCurrentLocation();
   }
 
   @override
   void dispose() {
     _descriptionController.dispose();
-    // 🔑 مهم: تحرير الـ interpreter والـ isolate، وإلا بيضلوا بالذاكرة
-    _tfliteService.dispose();
+    // The AI worker is app-wide and stays warm; screens never dispose it.
     super.dispose();
   }
 

@@ -1,17 +1,26 @@
 import 'package:flutter/material.dart';
 
-/// يرسم مربعات الكشف فوق معاينة الكاميرا.
+import '../services/tflite_service.dart' show LetterboxGeometry;
+
+/// Draws detection boxes over the camera preview.
 ///
-/// تحسينات الأداء:
-///  1. `shouldRepaint` صار يقارن فعلياً — الكود القديم كان `=> true` دائماً،
-///     يعني إعادة رسم كاملة مع كل rebuild حتى لو ما تغيّر ولا مربع.
-///  2. كائنات `Paint` مبنية مرة وحدة كـ static بدل إنشائها كل رسمة.
-///  3. `TextPainter` مخزّن بـ cache حسب نص الليبل — بناء + layout للنص كان
-///     أغلى جزء بالـ painter، وكان بيتكرر كل فريم لنفس النص تقريباً.
+/// Boxes arrive normalised (0–1) in the *letterboxed model input* space. To
+/// land on the preview they are mapped in two steps:
+///  1. undo the letterbox (remove the grey padding, stretch to the content
+///     rectangle) → 0–1 in the upright camera frame;
+///  2. apply the same `BoxFit.cover` crop the preview uses, from the frame's
+///     aspect ratio ([LetterboxGeometry.contentAspect]) to the widget size.
+///
+/// Without [geometry] the boxes are drawn straight onto the widget, which is
+/// only correct when the camera frame happens to be square.
+///
+/// Performance notes kept from the previous version: real `shouldRepaint`,
+/// static `Paint`s, cached `TextPainter`s.
 class BoundingBoxPainter extends CustomPainter {
-  BoundingBoxPainter({required this.detections});
+  BoundingBoxPainter({required this.detections, this.geometry});
 
   final List<Map<String, dynamic>> detections;
+  final LetterboxGeometry? geometry;
 
   static final Paint _boxPaint = Paint()
     ..color = Colors.redAccent
@@ -42,7 +51,6 @@ class BoundingBoxPainter extends CustomPainter {
     fontWeight: FontWeight.bold,
   );
 
-  /// cache صغير للنصوص المرسومة — نفس الليبل بيتكرر بين الفريمات.
   static final Map<String, TextPainter> _textCache = <String, TextPainter>{};
 
   static TextPainter _textPainterFor(String label) {
@@ -54,7 +62,6 @@ class BoundingBoxPainter extends CustomPainter {
       textDirection: TextDirection.ltr,
     )..layout();
 
-    // حد أقصى بسيط حتى لا ينمو الـ cache بلا نهاية (النسب بتتغير باستمرار)
     if (_textCache.length > 64) _textCache.clear();
     _textCache[label] = tp;
     return tp;
@@ -64,20 +71,44 @@ class BoundingBoxPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (detections.isEmpty) return;
 
+    // Step 2 constants: the upright frame drawn with BoxFit.cover.
+    final g = geometry;
+    double drawW = size.width, drawH = size.height, offX = 0, offY = 0;
+    if (g != null && g.contentAspect > 0 && size.height > 0) {
+      final widgetAspect = size.width / size.height;
+      if (g.contentAspect > widgetAspect) {
+        // Frame is wider than the widget: height fits, width overflows.
+        drawH = size.height;
+        drawW = drawH * g.contentAspect;
+      } else {
+        drawW = size.width;
+        drawH = drawW / g.contentAspect;
+      }
+      offX = (size.width - drawW) / 2;
+      offY = (size.height - drawH) / 2;
+    }
+
     for (final d in detections) {
-      final x1 = (d['x1'] as num?)?.toDouble() ?? 0.0;
-      final y1 = (d['y1'] as num?)?.toDouble() ?? 0.0;
-      final x2 = (d['x2'] as num?)?.toDouble() ?? 0.0;
-      final y2 = (d['y2'] as num?)?.toDouble() ?? 0.0;
+      double x1 = (d['x1'] as num?)?.toDouble() ?? 0.0;
+      double y1 = (d['y1'] as num?)?.toDouble() ?? 0.0;
+      double x2 = (d['x2'] as num?)?.toDouble() ?? 0.0;
+      double y2 = (d['y2'] as num?)?.toDouble() ?? 0.0;
+
+      // Step 1: letterbox → upright frame.
+      if (g != null && g.contentWNorm > 0 && g.contentHNorm > 0) {
+        x1 = ((x1 - g.padXNorm) / g.contentWNorm).clamp(0.0, 1.0);
+        x2 = ((x2 - g.padXNorm) / g.contentWNorm).clamp(0.0, 1.0);
+        y1 = ((y1 - g.padYNorm) / g.contentHNorm).clamp(0.0, 1.0);
+        y2 = ((y2 - g.padYNorm) / g.contentHNorm).clamp(0.0, 1.0);
+      }
 
       final rect = Rect.fromLTRB(
-        x1 * size.width,
-        y1 * size.height,
-        x2 * size.width,
-        y2 * size.height,
+        offX + x1 * drawW,
+        offY + y1 * drawH,
+        offX + x2 * drawW,
+        offY + y2 * drawH,
       );
 
-      // تجاهل المربعات المنحلّة (عرض أو ارتفاع صفر)
       if (rect.width <= 1 || rect.height <= 1) continue;
 
       final rrect = RRect.fromRectAndRadius(rect, _boxRadius);
@@ -89,7 +120,8 @@ class BoundingBoxPainter extends CustomPainter {
       final tp = _textPainterFor(label);
 
       final labelWidth = tp.width + 14;
-      final labelLeft = rect.left.clamp(0.0, (size.width - labelWidth).clamp(0.0, size.width));
+      final labelLeft = rect.left
+          .clamp(0.0, (size.width - labelWidth).clamp(0.0, size.width));
       final labelTop = (rect.top - _labelHeight - 6)
           .clamp(0.0, (size.height - _labelHeight).clamp(0.0, size.height));
 
@@ -104,9 +136,9 @@ class BoundingBoxPainter extends CustomPainter {
     }
   }
 
-  /// مقارنة فعلية بدل `=> true`.
   @override
   bool shouldRepaint(covariant BoundingBoxPainter old) {
+    if (old.geometry != geometry) return true;
     if (identical(old.detections, detections)) return false;
     if (old.detections.length != detections.length) return true;
 

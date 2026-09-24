@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,14 +18,14 @@ void main() async {
   // Open SharedPreferences to check onboarding status
   final prefs = await SharedPreferences.getInstance();
 
-  // 2. Boot up the TFLite AI Brain
-  try {
-    final aiService = TFLiteService();
-    await aiService.initializeModel();
-    debugPrint('✅ TFLite Model initialized successfully on startup.');
-  } catch (e) {
-    debugPrint('❌ CRITICAL: Failed to initialize TFLite Model on startup: $e');
-  }
+  // 2. Pre-warm the shared AI worker in the background. Not awaited: the
+  //    worker runs in its own isolate, so the first screen appears at once
+  //    and the camera screen finds the model already loaded.
+  unawaited(
+    TFLiteService.instance.initialize().catchError((Object e) {
+      debugPrint('❌ AI worker failed to start: $e');
+    }),
+  );
 
   // 3. Check if they have seen the onboarding screen
   bool hasSeenOnboarding = prefs.getBool('hasSeenOnboarding') ?? false;
