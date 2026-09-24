@@ -1,74 +1,108 @@
 # Rased | راصد
 
-**Rased** is an AI-powered, high-speed dashcam application built with Flutter. It utilizes on-device machine learning (TensorFlow Lite) to automatically detect road hazards—such as potholes, cracks, and broken manholes—in real-time, tagging them with high-accuracy GPS coordinates and reporting them to a central backend.
+**Rased** is an on-device AI dashcam app built with Flutter. Mounted on the
+dashboard, it watches the road, detects potholes in real time with a YOLO26n
+model running locally (LiteRT / TensorFlow Lite), and reports each confirmed
+pothole once — photo plus GPS — to the municipal backend, without the driver
+touching the phone.
+
+Documentation:
+
+- [docs/live-detection.md](docs/live-detection.md) — how the live detection
+  pipeline works today: architecture, model, trigger policy, diagnostics,
+  device requirements, what is still unverified on a phone.
+- [docs/production-roadmap.md](docs/production-roadmap.md) — what remains to
+  make it production ready, in order, with exit criteria.
+- [docs/ai-accuracy-roadmap.md](docs/ai-accuracy-roadmap.md) — the ML plan:
+  measuring real accuracy, local data collection, training recipe, edge
+  tuning, and the monthly improvement loop.
 
 ---
 
-## Key Features
+## Key features
 
-* **Real-Time AI Detection:** Uses a custom YOLO vision model (Float32) running entirely on-device to scan the road without lag.
-* **High-Accuracy GPS Tagging:** Automatically locks onto the user's coordinates to ensure precise location data for municipal repairs.
-* **Manual Reporting:** A fallback feature allowing users to manually capture damage, verified by the local AI before submission.
-* **Bilingual UI & Dark Theme:** Fully responsive, RTL-supported Arabic interface with a sleek, dark-themed design and yellow accents.
-* **Seamless Backend Integration:** Robust REST API communication handling user authentication, role management (SuperAdmin/User), and hazard report queueing.
+- **Live detection off the UI thread.** All per-frame work (colour
+  conversion, inference, JPEG encoding) runs in a dedicated worker isolate.
+  The preview stays smooth regardless of phone speed. Backend selection is
+  GPU → CPU/XNNPACK (FP16) → CPU, chosen and verified at start-up.
+- **One report per pothole.** A time-based episode policy confirms a pothole
+  over ~300 ms of detections and fires once; spatial dedupe stops repeats on
+  return legs or in traffic.
+- **Reports never pause detection.** Photo from the detection frame, GPS from
+  a continuous stream, uploads through a background queue with offline
+  fallback.
+- **On-device diagnostics.** The AI panel shows backend, processed FPS,
+  per-stage timings and UI jank every two seconds; a per-episode log on the
+  phone supports threshold tuning from real drives.
+- **Manual reporting** with local AI pre-check, bilingual (Arabic/English)
+  dark UI, map and admin screens, role-based backend.
 
----
+## Tech stack
 
-## Tech Stack
+- Flutter / Dart (Dart ≥ 3.11)
+- `tflite_flutter` 0.12 (LiteRT), `camera` (camerax), `geolocator`, `image`,
+  `path_provider`, `http`, `shared_preferences`
+- Model: YOLO26n exported to `.tflite` (see `YoloModel/`)
 
-* **Frontend:** Flutter & Dart
-* **AI/ML:** TensorFlow Lite (`tflite_flutter`)
-* **Hardware Integration:** Camera API, Geolocator, Image Picker
-* **State Management & Storage:** SharedPreferences, HTTP
-* **Backend Integration:** RESTful APIs (via DigitalOcean/Render)
+## Getting started
 
----
+Prerequisites: Flutter SDK (stable), Android SDK / Android Studio, a physical
+Android phone (camera and GPU are required for anything meaningful).
 
-## Getting Started
-
-Follow these steps to run the Rased app on your local machine.
-
-### Prerequisites
-* [Flutter SDK](https://docs.flutter.dev/get-started/install) (latest stable version)
-* Android Studio / VS Code
-* An Android/iOS physical device (Recommended for Camera and AI performance)
-
-### Installation
-
-1. **Clone the repository:**
 ```bash
-   git clone [https://github.com/YourUsername/Rased.git](https://github.com/YourUsername/Rased.git)
-   cd Rased
-   ```
+flutter pub get
+flutter analyze
+dart test test/frame_sampler_test.dart test/report_trigger_policy_test.dart
+flutter build apk --release --split-per-abi   # or: flutter run --profile
+```
 
-2. **Install dependencies:**
-```bash
-   flutter pub get
-   ```
+Install `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`. Always
+measure with release or profile builds; debug builds are several times slower
+in the pixel loops.
 
-3. **Add the AI Model:**
-   * Due to file size limits, the `best_float32.tflite` model is not tracked in version control.
-   * Obtain the model file from the team and place it in the `assets/` directory.
-   * Ensure `classes.txt` is also present in the `assets/` directory.
+Windows note: Smart App Control may block Flutter's shader compiler
+(`impellerc.exe`). Add an exclusion for the Flutter SDK folder before
+`flutter test`, `flutter run` or `flutter build`.
 
-4. **Run the application:**
-```bash
-   flutter run
-   ```
+### Model file
 
----
+The model ships in `assets/` with the naming convention
+`pothole_<arch>_<imgsz>_<precision>[_raw].tflite` (currently
+`pothole_yolo26n_640_fp32.tflite`). To try another export, add it to
+`pubspec.yaml` under `flutter: assets:` and to
+`TFLiteService.benchModelAssets`, then long-press the AI panel in the live
+screen to switch between models and GPU/CPU at runtime. Export variants with
+`YoloModel/export_model.py` and verify them with `assets/check_model.py`.
+
+## Repository layout
+
+```
+lib/
+  main.dart                          app start; pre-warms the AI worker
+  screens/live_camera_screen.dart    dashcam screen: frame dispatch, trigger, UI
+  services/detection_worker.dart     worker isolate: interpreter, decode, snapshot
+  services/frame_sampler.dart        letterbox + rotation + YUV→RGB (pure Dart, tested)
+  services/tflite_service.dart       main-isolate facade over the worker (singleton)
+  services/report_trigger_policy.dart  when detections become a report (tested)
+  services/report_upload_queue.dart  background uploads + offline fallback
+  services/episode_log.dart          per-episode JSONL log for tuning
+  services/api_service.dart          REST client (auth, hazards)
+  widgets/bounding_box_painter.dart  draws boxes on the preview
+test/                                pure-Dart unit tests (run with `dart test`)
+YoloModel/                           dataset merge, training and export scripts
+assets/                              model, classes.txt, check_model.py
+docs/                                documentation
+```
 
 ## Team
 
-* **Frontend Engineer:** [Ahmad Ali](https://github.com/ahmadali9250)
-* **AI / ML Engineer:** [Abdallah Abughallous](https://github.com/AbdaullahAG)
-* **Backend Engineer:** [Abd Alqader Alsa'di](https://github.com/Abedalqaders)
+- **Frontend Engineer:** [Ahmad Ali](https://github.com/ahmadali9250)
+- **AI / ML Engineer:** [Abdallah Abughallous](https://github.com/AbdaullahAG)
+- **Backend Engineer:** [Abd Alqader Alsa'di](https://github.com/Abedalqaders)
 
----
+## Privacy and permissions
 
-## Privacy & Permissions
-
-Rased requires the following permissions to function correctly:
-* **Camera:** To scan the road and capture hazard photos.
-* **Location:** To attach precise GPS coordinates to hazard reports.
-* **Storage:** To temporarily queue reports if the device loses internet connection.
+- **Camera** — to scan the road and capture hazard photos.
+- **Location (precise)** — to attach GPS coordinates to reports.
+- **Storage (app-private)** — report photos awaiting upload, offline queue,
+  diagnostics log.

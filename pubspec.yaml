@@ -26,12 +26,14 @@ dependencies:
   camera: ^0.12.0+1
   shared_preferences: ^2.5.5
   vibration: ^2.0.0
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
+  test: ^1.25.0
 
 # هاد القسم لازم يكون مستقل تماماً وما في قبله مسافات
 flutter_launcher_icons:
@@ -44,6 +46,8 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
   assets:
-    - assets/best.tflite
+    # Model naming: pothole_<arch>_<imgsz>_<precision>[_raw].tflite
+    # Keep in sync with TFLiteService.defaultModelAsset / benchModelAssets.
+    - assets/pothole_yolo26n_640_fp32.tflite
     - assets/classes.txt
     - assets/icon.webp
