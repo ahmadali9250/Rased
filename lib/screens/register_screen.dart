@@ -1,8 +1,9 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:intl_phone_field/intl_phone_field.dart';
 import '../services/api_service.dart';
+import '../services/app_language.dart';
+import '../widgets/app_phone_field.dart';
 
 class RegisterScreen extends StatefulWidget {
   final String language;
@@ -24,7 +25,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String _fullPhoneNumber = ''; 
 
   void _handleRegister() async {
-    final isArabic = widget.language == 'ar';
+    final isArabic = AppLanguage.isArabic;
 
     if (_nameController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isArabic ? 'يرجى إدخال الاسم الكامل' : 'Please enter your full name'), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
@@ -130,7 +131,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isArabic = widget.language == 'ar';
+    // Direction comes from MaterialApp's locale, so the AppBar back arrow
+    // and SnackBars follow it too.
+    final isArabic = context.isArabic;
 
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
@@ -138,9 +141,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
-          child: Directionality(
-            textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
-            child: Column(
+          child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const Icon(Icons.verified_user, size: 80, color: Color(0xFFFFD700)),
@@ -181,18 +182,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           ),
                           Padding(
                             padding: const EdgeInsets.only(bottom: 16.0),
-                            child: IntlPhoneField(
+                            child: AppPhoneField(
                               controller: _phoneController,
-                              dropdownIcon: const Icon(Icons.arrow_drop_down, color: Color(0xFFFFD700)),
-                              dropdownTextStyle: const TextStyle(color: Colors.white, fontSize: 16),
-                              style: const TextStyle(color: Colors.white),
-                              initialCountryCode: 'JO', 
-                              decoration: InputDecoration(
-                                labelText: isArabic ? "رقم الهاتف" : "Phone Number",
-                                labelStyle: const TextStyle(color: Colors.white54),
-                                enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.2)), borderRadius: BorderRadius.circular(10)),
-                                focusedBorder: OutlineInputBorder(borderSide: const BorderSide(color: Color(0xFFFFD700)), borderRadius: BorderRadius.circular(10)),
-                              ),
+                              labelText: isArabic ? "رقم الهاتف" : "Phone Number",
                               onChanged: (phone) {
                                 _fullPhoneNumber = phone.completeNumber;
                               },
@@ -222,7 +214,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ),
                 ),
               ],
-            ),
           ),
         ),
       ),

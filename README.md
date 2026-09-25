@@ -31,9 +31,10 @@ Documentation:
 - **Reports never pause detection.** Photo from the detection frame, GPS from
   a continuous stream, uploads through a background queue with offline
   fallback.
-- **On-device diagnostics.** The AI panel shows backend, processed FPS,
-  per-stage timings and UI jank every two seconds; a per-episode log on the
-  phone supports threshold tuning from real drives.
+- **On-device diagnostics.** A 2-second line in the debug log (`flutter logs`
+  / logcat) shows backend, processed FPS, per-stage timings and UI jank; a
+  per-episode log on the phone supports threshold tuning from real drives.
+  The camera screen itself shows only the driver HUD.
 - **Manual reporting** with local AI pre-check, bilingual (Arabic/English)
   dark UI, map and admin screens, role-based backend.
 
@@ -70,8 +71,9 @@ The model ships in `assets/` with the naming convention
 `pothole_<arch>_<imgsz>_<precision>[_raw].tflite` (currently
 `pothole_yolo26n_640_fp32.tflite`). To try another export, add it to
 `pubspec.yaml` under `flutter: assets:` and to
-`TFLiteService.benchModelAssets`, then long-press the AI panel in the live
-screen to switch between models and GPU/CPU at runtime. Export variants with
+`TFLiteService.benchModelAssets`, then point `TFLiteService.defaultModelAsset`
+at it (and set the GPU preference) to bench it; the 2-second diagnostics line
+in `flutter logs` shows the effect. Export variants with
 `YoloModel/export_model.py` and verify them with `assets/check_model.py`.
 
 ## Repository layout

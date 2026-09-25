@@ -1,8 +1,9 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'prefs_keys.dart';
 
 class OfflineQueue {
-  static const _key = 'pending_reports';
+  static const _key = PrefsKeys.pendingReports;
 
   static Future<void> save(Map<String, dynamic> report) async {
     final prefs = await SharedPreferences.getInstance();

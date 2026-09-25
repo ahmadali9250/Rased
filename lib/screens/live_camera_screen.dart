@@ -4,12 +4,15 @@ import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:gal/gal.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' show DeviceOrientation;
 import 'package:geolocator/geolocator.dart';
 import 'package:vibration/vibration.dart';
 
 import '../services/api_service.dart';
+import '../services/app_language.dart';
+import '../services/dry_run_mode.dart';
 import '../services/episode_log.dart';
 import '../services/report_trigger_policy.dart';
 import '../services/report_upload_queue.dart';
@@ -50,10 +53,14 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
   // is never rebuilt per frame.
   final ValueNotifier<_Overlay> _overlay =
       ValueNotifier<_Overlay>(const _Overlay.empty());
-  final ValueNotifier<String> _prediction =
-      ValueNotifier<String>('Scanning road...');
-  final ValueNotifier<String> _diagnostics =
-      ValueNotifier<String>('AI: waiting for first frame…');
+  final ValueNotifier<_HudState> _hud =
+      ValueNotifier<_HudState>(_HudState.scanning);
+
+  /// Test mode (see [DryRunMode]): fires counted on screen instead of sent,
+  /// and the detection-frame photo goes to this gallery album for review.
+  final ValueNotifier<int> _dryRunCount = ValueNotifier<int>(0);
+  bool _lastFireWasDryRun = false;
+  static const String _dryRunAlbum = 'Rased Test Mode';
 
   // --- frame flow ---
   CameraImage? _pendingFrame;
@@ -151,8 +158,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     _gpsSub?.cancel();
     // The AI worker is app-wide and stays warm — never disposed here.
     _overlay.dispose();
-    _prediction.dispose();
-    _diagnostics.dispose();
+    _hud.dispose();
+    _dryRunCount.dispose();
     super.dispose();
   }
 
@@ -313,7 +320,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     if (!mounted) return;
     final aiStartupError = _ai.diagnosticError;
     if (aiStartupError != null) {
-      _diagnostics.value = 'AI ERROR: $aiStartupError';
+      debugPrint('❌ AI startup error: $aiStartupError');
+      _hud.value = _HudState.aiError;
       return;
     }
     _startFastAIDetectionStream();
@@ -345,7 +353,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     if (controller.value.isStreamingImages) return;
 
     _isDetecting = true;
-    _prediction.value = 'Scanning road...';
+    _hud.value = _HudState.scanning;
     if (mounted) setState(() {});
 
     controller.startImageStream(_onCameraFrame);
@@ -420,7 +428,8 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     final error = result.error;
     if (error != null) {
       _stats.errors++;
-      _diagnostics.value = 'AI ERROR: ${error.split('\n').first}';
+      debugPrint('❌ AI error: ${error.split('\n').first}');
+      _hud.value = _HudState.aiError;
       _lastDiagnosticLogTime = DateTime.now().millisecondsSinceEpoch;
       return;
     }
@@ -432,9 +441,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
       minConfidence: _uiConfidenceThreshold,
     );
 
-    _prediction.value = best == null
-        ? 'Clear Road'
-        : (best['label'] as String? ?? 'Pothole');
+    _hud.value = best == null ? _HudState.clear : _HudState.pothole;
     _overlay.value = _Overlay(
       detections: best == null
           ? const <Map<String, dynamic>>[]
@@ -529,6 +536,26 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     }
     final fix = _projectedFix();
     ep.fixSource = fix?.source ?? 'none';
+
+    // Test mode: everything up to here ran as in production. Show where the
+    // report would have gone, keep the photo in the gallery, and stop: no
+    // upload, no dedupe entry. Spatial dedupe is skipped on purpose (the
+    // phone does not move when testing against a video); the 1 s floor
+    // above still applies.
+    if (DryRunMode.enabled.value) {
+      _lastFireWasDryRun = true;
+      _lastReportUs = nowUs;
+      _stats.reports++;
+      _dryRunCount.value = _dryRunCount.value + 1;
+      if (_hasVibrator == true) {
+        unawaited(Vibration.vibrate(duration: 400));
+      }
+      _snapshotInFlight = true;
+      unawaited(_saveDryRunPhoto(ep.triggerConf, _dryRunCount.value));
+      return;
+    }
+    _lastFireWasDryRun = false;
+
     if (fix != null && _isNearRecentReport(fix)) {
       ep.suppressMask |= SuppressReason.dedupe;
       return;
@@ -544,6 +571,62 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     unawaited(_captureAndEnqueue(fix, ep));
   }
 
+  /// Test mode: the detection-frame JPEG (same one a real report would
+  /// upload) is written to the phone gallery, album [_dryRunAlbum], named
+  /// `rased_test_<n>_<date>_<time>_c<confidence>` so it can be matched to
+  /// the video afterwards. Nothing is uploaded.
+  Future<void> _saveDryRunPhoto(double triggerConf, int index) async {
+    bool saved = false;
+    try {
+      final jpeg = await _ai.requestSnapshot();
+      if (jpeg == null) {
+        debugPrint('⚠️ Test mode: no snapshot from worker');
+      } else {
+        final t = DateTime.now();
+        String two(int v) => v.toString().padLeft(2, '0');
+        final name = 'rased_test_${index}_'
+            '${t.year}-${two(t.month)}-${two(t.day)}_'
+            '${two(t.hour)}-${two(t.minute)}-${two(t.second)}_'
+            'c${(triggerConf * 100).round()}';
+        if (!await Gal.hasAccess(toAlbum: true)) {
+          await Gal.requestAccess(toAlbum: true);
+        }
+        await Gal.putImageBytes(jpeg, album: _dryRunAlbum, name: name);
+        saved = true;
+        debugPrint('🧪 Test mode: saved $name to album "$_dryRunAlbum"');
+      }
+    } catch (e) {
+      debugPrint('❌ Test mode: could not save photo: $e');
+    } finally {
+      _snapshotInFlight = false;
+    }
+    _showDryRunSnackBar(triggerConf, saved: saved);
+  }
+
+  void _showDryRunSnackBar(double triggerConf, {required bool saved}) {
+    if (!mounted) return;
+    final isArabic = ApiService.currentLanguage == 'ar';
+    final conf = triggerConf.toStringAsFixed(2);
+    final String text;
+    if (isArabic) {
+      text = '🧪 هون كان رح ينبعت بلاغ (ثقة $conf) · '
+          '${saved ? 'الصورة حُفظت في المعرض' : 'تعذّر حفظ الصورة'}';
+    } else {
+      text = '🧪 A report would have been sent here (conf $conf) · '
+          '${saved ? 'photo saved to gallery' : 'photo not saved'}';
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(text),
+          backgroundColor: Colors.purple,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+  }
+
   void _fillGpsContext(Episode ep) {
     final p = _latestFix;
     if (p == null) return;
@@ -556,7 +639,9 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     final ep = policy.episode;
     if (ep.speedMps.isNaN) _fillGpsContext(ep);
     final String result;
-    if (ep.reported && ep.suppressMask == 0) {
+    if (ep.reported && _lastFireWasDryRun) {
+      result = 'dryRun';
+    } else if (ep.reported && ep.suppressMask == 0) {
       result = 'reported';
     } else if (ep.reported) {
       result = 'suppressed:${SuppressReason.describe(ep.suppressMask)}';
@@ -601,7 +686,11 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     final outcome = _uploads.lastOutcome.value;
     if (outcome == null || !mounted) return;
     final isArabic = ApiService.currentLanguage == 'ar';
-    final detail = outcome.message == null ? '' : ': ${outcome.message}';
+    if (outcome.debugDetail != null) {
+      debugPrint('⚠️ Upload outcome ${outcome.kind.name}: ${outcome.debugDetail}');
+    }
+    final failure = outcome.failure;
+    final detail = failure == null ? '' : ': ${failure.message(isArabic)}';
     final (String text, Color color) = switch (outcome.kind) {
       ReportOutcomeKind.sent => (
           isArabic ? '✅ تم إرسال البلاغ!' : '✅ Report sent!',
@@ -665,46 +754,9 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
       gpsStatus: _gpsStatus,
       episode: episodeInfo,
     );
-    _diagnostics.value = line;
+    // Logcat only (`flutter logs`); the on-screen panel was removed.
     debugPrint('🔎 $line');
     _stats.resetWindow();
-  }
-
-  /// Bench harness: long-press the AI panel to cycle model asset × backend.
-  /// Order: (asset0, GPU) → (asset0, CPU) → (asset1, GPU) → …
-  Future<void> _cycleBenchConfig() async {
-    final assets = TFLiteService.benchModelAssets;
-    final idx = math.max(0, assets.indexOf(_ai.modelAsset));
-    final String nextAsset;
-    final bool nextGpu;
-    if (_ai.preferGpu) {
-      nextAsset = assets[idx];
-      nextGpu = false;
-    } else {
-      nextAsset = assets[(idx + 1) % assets.length];
-      nextGpu = true;
-    }
-
-    _stopAIDetectionStream();
-    _diagnostics.value =
-        'AI | restarting → ${nextAsset.split('/').last} '
-        '(${nextGpu ? 'GPU first' : 'CPU only'})…';
-    await _ai.restart(modelAsset: nextAsset, preferGpu: nextGpu);
-    if (!mounted) return;
-    _policy = null; // model input size may differ
-    _stats.resetWindow();
-    _lastDiagnosticLogTime = 0;
-    final error = _ai.diagnosticError;
-    if (error != null) {
-      _diagnostics.value = 'AI ERROR: $error';
-      return;
-    }
-    _startFastAIDetectionStream();
-  }
-
-  String _getArabicLabel(String englishLabel) {
-    if (englishLabel.toLowerCase().contains('pothole')) return 'حفرة';
-    return englishLabel;
   }
 
   // ===========================================================================
@@ -713,7 +765,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
 
   @override
   Widget build(BuildContext context) {
-    final isArabic = ApiService.currentLanguage == 'ar';
+    final isArabic = context.isArabic;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -760,6 +812,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
                       painter: BoundingBoxPainter(
                         detections: overlay.detections,
                         geometry: overlay.geometry,
+                        labelText: isArabic ? 'حفرة' : 'Pothole',
                       ),
                     ),
                   ),
@@ -784,7 +837,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
             ),
 
           _buildTopBar(isArabic),
-          _buildDiagnosticsPanel(),
+          _buildDryRunBadge(isArabic),
           _buildUploadPill(isArabic),
           _buildHud(isArabic),
         ],
@@ -858,105 +911,40 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
     );
   }
 
-  /// On-device log: backend chosen, GPU/CPU attempts, and the 2-second
-  /// performance line. Long-press to cycle model/backend (bench harness).
-  Widget _buildDiagnosticsPanel() {
-    return Positioned(
-      top: 126,
-      left: 16,
-      right: 16,
-      child: GestureDetector(
-        onLongPress: _cycleBenchConfig,
-        child: ValueListenableBuilder<List<String>>(
-          valueListenable: _ai.diagnosticEvents,
-          builder: (_, events, _) => ValueListenableBuilder<String>(
-            valueListenable: _diagnostics,
-            builder: (_, summary, _) {
-              final hasError = summary.startsWith('AI ERROR') ||
-                  events.any((event) => event.contains('ERROR'));
-              return Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-                decoration: BoxDecoration(
-                  color: hasError
-                      ? Colors.red.withValues(alpha: 0.86)
-                      : Colors.black.withValues(alpha: 0.74),
-                  borderRadius: BorderRadius.circular(10),
-                  border:
-                      Border.all(color: Colors.white.withValues(alpha: 0.18)),
+  /// Test-mode badge with the count of fires that would have been reports.
+  /// Only visible while [DryRunMode] is on.
+  Widget _buildDryRunBadge(bool isArabic) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: DryRunMode.enabled,
+      builder: (_, enabled, _) {
+        if (!enabled) return const SizedBox.shrink();
+        return Positioned(
+          left: 24,
+          top: 126,
+          child: ValueListenableBuilder<int>(
+            valueListenable: _dryRunCount,
+            builder: (_, count, _) => Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.purple.withValues(alpha: 0.85),
+                borderRadius: BorderRadius.circular(30),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.3)),
+              ),
+              child: Text(
+                isArabic
+                    ? '🧪 وضع التجربة · بلاغات: $count'
+                    : '🧪 TEST MODE · reports: $count',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          hasError
-                              ? Icons.error_outline_rounded
-                              : Icons.memory_rounded,
-                          color:
-                              hasError ? Colors.white : const Color(0xFFFFD700),
-                          size: 16,
-                        ),
-                        const SizedBox(width: 6),
-                        const Expanded(
-                          child: Text(
-                            'AI device log — long-press to switch model/backend',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      summary,
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.left,
-                      textDirection: TextDirection.ltr,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    if (events.isNotEmpty) ...[
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 6),
-                        child: Divider(height: 1, color: Colors.white30),
-                      ),
-                      for (final event in events)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 1),
-                          child: Text(
-                            event,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textDirection: TextDirection.ltr,
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontFamily: 'monospace',
-                              fontSize: 10,
-                              height: 1.2,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ],
-                ),
-              );
-            },
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -968,7 +956,7 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
         if (pending <= 0) return const SizedBox.shrink();
         return Positioned(
           right: 24,
-          top: 268,
+          top: 126,
           child: Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -1008,26 +996,30 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
       right: 24,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(24),
-        child: ValueListenableBuilder<String>(
-          valueListenable: _prediction,
-          builder: (_, prediction, _) {
-            final dmg = prediction.toLowerCase();
-            final isHazardDetected = dmg.contains('pothole');
-            final hudColor =
-                isHazardDetected ? Colors.redAccent : const Color(0xFFFFD700);
-            final hudIcon =
-                isHazardDetected ? Icons.warning_amber_rounded : Icons.radar;
-
-            String displayText = prediction;
-            if (prediction.isNotEmpty && prediction != 'Scanning road...') {
-              displayText = prediction[0].toUpperCase() +
-                  prediction.substring(1).toLowerCase();
-            }
-            if (isArabic) {
-              displayText = isHazardDetected
-                  ? _getArabicLabel(prediction)
-                  : 'جاري مسح الطريق...';
-            }
+        child: ValueListenableBuilder<_HudState>(
+          valueListenable: _hud,
+          builder: (_, state, _) {
+            final isHazardDetected = state == _HudState.pothole;
+            final hudColor = switch (state) {
+              _HudState.pothole => Colors.redAccent,
+              _HudState.aiError => Colors.orangeAccent,
+              _HudState.scanning || _HudState.clear => const Color(0xFFFFD700),
+            };
+            final hudIcon = switch (state) {
+              _HudState.pothole => Icons.warning_amber_rounded,
+              _HudState.clear => Icons.check_circle_outline,
+              _HudState.aiError => Icons.error_outline_rounded,
+              _HudState.scanning => Icons.radar,
+            };
+            final displayText = switch (state) {
+              _HudState.scanning =>
+                isArabic ? 'جاري مسح الطريق...' : 'Scanning road...',
+              _HudState.clear => isArabic ? 'الطريق سليم' : 'Clear road',
+              _HudState.pothole => isArabic ? 'تم رصد حفرة' : 'Pothole detected',
+              _HudState.aiError => isArabic
+                  ? 'الذكاء الاصطناعي غير متاح، أعد تشغيل التطبيق'
+                  : 'AI unavailable, restart the app',
+            };
 
             return AnimatedContainer(
               duration: const Duration(milliseconds: 300),
@@ -1110,6 +1102,10 @@ class _LiveCameraScreenState extends State<LiveCameraScreen>
 // =============================================================================
 // Helpers
 // =============================================================================
+
+/// What the HUD shows. Typed so the text is chosen per language at build time
+/// instead of sniffing model label strings.
+enum _HudState { scanning, clear, pothole, aiError }
 
 /// What the painter draws: the current boxes plus the letterbox geometry
 /// needed to place them on the preview. Value-equal so repeated "clear road"

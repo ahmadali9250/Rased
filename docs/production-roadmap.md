@@ -28,9 +28,9 @@ Goal: prove the pipeline on real hardware and fix what the phone reveals.
 |---|---|---|
 | 0.1 | Dev machine: Android SDK installed, Flutter SDK on PATH, Smart App Control exclusion for the Flutter folder (it blocks the shader compiler). | `flutter doctor` green for Android; `flutter build apk --release --split-per-abi` succeeds. |
 | 0.2 | Commit the current working tree as the baseline. | Clean `git status`. |
-| 0.3 | Install on the Galaxy A25 (primary demo phone). Read the AI panel. | Backend name and `proc` FPS recorded with the 640 model. Expect GPU or `CPU/XNNPACK-fp16`. |
+| 0.3 | Install on the Galaxy A25 (primary demo phone). Read the 2-second diagnostics line in logcat (`flutter logs`). | Backend name and `proc` FPS recorded with the 640 model. Expect GPU or `CPU/XNNPACK-fp16`. |
 | 0.4 | Trigger one report; inspect the JPEG. | Photo upright. If rotated, fix `_updateRotation` (rotation sign) and re-test. |
-| 0.5 | Export E1 (416 e2e) and E2 (416 raw) with `YoloModel/export_model.py`; check both with `assets/check_model.py`; add to `pubspec.yaml` and `benchModelAssets`; bench with the long-press harness on each fleet phone. | Per-device table: model × backend → `proc` FPS, `inv` ms, `jank`. Pick the shipping model per device class. |
+| 0.5 | Export E1 (416 e2e) and E2 (416 raw) with `YoloModel/export_model.py`; check both with `assets/check_model.py`; add to `pubspec.yaml` and `benchModelAssets`; bench each fleet phone by switching `TFLiteService.defaultModelAsset` and reading the logcat diagnostics line. | Per-device table: model × backend → `proc` FPS, `inv` ms, `jank`. Pick the shipping model per device class. |
 | 0.6 | Bench-top test with a pothole video on a laptop screen: one report per pass, upload pill visible while boxes keep moving, airplane mode → offline queue. | All three behaviours observed. |
 | 0.7 | Fix whatever 0.3–0.6 surfaces. | Analyzer clean, tests green, re-verified on device. |
 
@@ -100,7 +100,7 @@ Goal: the app survives a working day in a car and a fleet of phones.
 
 | # | Task |
 |---|---|
-| 3.15 | A "drive mode" screen state: hide the diagnostics panel by default, big status, minimal touch targets; long-press harness only in a debug menu. |
+| 3.15 | **Done 2026-09-25.** The diagnostics panel and long-press harness were removed from the camera screen; drivers see only the HUD (scanning / clear road / pothole detected / AI unavailable). The diagnostics line lives in logcat only. |
 | 3.16 | Voice/sound cue on report in addition to vibration. |
 | 3.17 | Night and low-light handling: check exposure behaviour; consider `ResolutionPreset.medium` vs high at night; measure recall at night on the regression set. |
 | 3.18 | Session summary at the end of a drive (distance, reports, uploads pending). |

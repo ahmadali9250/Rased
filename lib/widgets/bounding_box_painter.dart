@@ -17,10 +17,18 @@ import '../services/tflite_service.dart' show LetterboxGeometry;
 /// Performance notes kept from the previous version: real `shouldRepaint`,
 /// static `Paint`s, cached `TextPainter`s.
 class BoundingBoxPainter extends CustomPainter {
-  BoundingBoxPainter({required this.detections, this.geometry});
+  BoundingBoxPainter({
+    required this.detections,
+    this.geometry,
+    this.labelText,
+  });
 
   final List<Map<String, dynamic>> detections;
   final LetterboxGeometry? geometry;
+
+  /// Display name for the box label (e.g. "Pothole" / "حفرة"). Falls back
+  /// to the raw model class name when null.
+  final String? labelText;
 
   static final Paint _boxPaint = Paint()
     ..color = Colors.redAccent
@@ -116,7 +124,8 @@ class BoundingBoxPainter extends CustomPainter {
       canvas.drawRRect(rrect, _boxPaint);
 
       final conf = (d['conf'] as num?)?.toDouble() ?? 0.0;
-      final label = '${d['label']} ${(conf * 100).toStringAsFixed(0)}%';
+      final name = labelText ?? '${d['label']}';
+      final label = '$name ${(conf * 100).toStringAsFixed(0)}%';
       final tp = _textPainterFor(label);
 
       final labelWidth = tp.width + 14;
@@ -139,6 +148,7 @@ class BoundingBoxPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant BoundingBoxPainter old) {
     if (old.geometry != geometry) return true;
+    if (old.labelText != labelText) return true;
     if (identical(old.detections, detections)) return false;
     if (old.detections.length != detections.length) return true;
 

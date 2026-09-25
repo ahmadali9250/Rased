@@ -10,6 +10,10 @@ import 'package:flutter_map_heatmap/flutter_map_heatmap.dart';
 
 import 'my_reports_screen.dart';
 import '../services/api_service.dart';
+import '../services/app_language.dart';
+import '../services/report_events.dart';
+import '../utils/formatters.dart';
+import '../utils/hazard_labels.dart';
 import 'account_screen.dart';
 import 'report_damage_screen.dart';
 import 'live_camera_screen.dart';
@@ -21,18 +25,19 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   int _selectedIndex = 0;
-  late String _language = ApiService.currentLanguage;
-  
+
+  /// Current UI language ('ar'/'en'), owned by [AppLanguage].
+  String get _language => ApiService.currentLanguage;
+
   final MapController _mapController = MapController();
   final TextEditingController _searchController = TextEditingController();
 
-  void _toggleLanguage() {
-    setState(() {
-      _language = _language == 'en' ? 'ar' : 'en';
-      ApiService.currentLanguage = _language;
-    });
+  Future<void> _toggleLanguage() async {
+    await AppLanguage.toggle(); // saved; MaterialApp re-localizes the tree
+    if (!mounted) return;
+    setState(() {});
     _fetchLiveHazards();
   }
 
@@ -59,20 +64,56 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Refetch when a report is sent (manual or live camera) or an admin
+    // changes a status, and when the app comes back to the foreground.
+    ReportEvents.version.addListener(_onReportsChanged);
     _fetchLiveHazards();
     _initLiveLocationTracking();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    ReportEvents.version.removeListener(_onReportsChanged);
     _positionStream?.cancel();
     _mapController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
-  Future<void> _fetchLiveHazards() async {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _fetchLiveHazards();
+  }
+
+  void _onReportsChanged() => _fetchLiveHazards();
+
+  Future<void>? _hazardsInFlight;
+  bool _hazardsRefetchQueued = false;
+
+  /// One request at a time; a call during a fetch schedules one more after
+  /// it, so the newest server state always lands.
+  Future<void> _fetchLiveHazards() {
+    final running = _hazardsInFlight;
+    if (running != null) {
+      _hazardsRefetchQueued = true;
+      return running;
+    }
+    final future = _loadHazards().whenComplete(() {
+      _hazardsInFlight = null;
+      if (_hazardsRefetchQueued) {
+        _hazardsRefetchQueued = false;
+        _fetchLiveHazards();
+      }
+    });
+    _hazardsInFlight = future;
+    return future;
+  }
+
+  Future<void> _loadHazards() async {
     final liveData = await ApiService.fetchHazards(language: _language);
+    if (!mounted) return;
     setState(() {
       _hazards = liveData;
       _isLoading = false;
@@ -175,11 +216,12 @@ class _MapScreenState extends State<MapScreen> {
 
                 // Option A: Live AI Camera
                 InkWell(
-                  // 🚨 FIX: Made async to wait and reload
-                  onTap: () async {
+                  // The map refetches through ReportEvents when an upload
+                  // lands, which for the live camera is usually after we
+                  // return here.
+                  onTap: () {
                     Navigator.pop(context); // Close the bottom sheet first
-                    await Navigator.push(context, MaterialPageRoute(builder: (context) => const LiveCameraScreen()));
-                    _fetchLiveHazards(); // 🚨 FIX: Reloads map data instantly upon returning
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const LiveCameraScreen()));
                   },
                   borderRadius: BorderRadius.circular(16),
                   child: Container(
@@ -217,11 +259,9 @@ class _MapScreenState extends State<MapScreen> {
 
                 // Option B: Manual Photo
                 InkWell(
-                  // 🚨 FIX: Made async to wait and reload
-                  onTap: () async {
+                  onTap: () {
                     Navigator.pop(context); // Close the bottom sheet first
-                    await Navigator.push(context, MaterialPageRoute(builder: (context) => const ReportDamageScreen()));
-                    _fetchLiveHazards(); // 🚨 FIX: Reloads map data instantly upon returning
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const ReportDamageScreen()));
                   },
                   borderRadius: BorderRadius.circular(16),
                   child: Container(
@@ -265,7 +305,7 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isArabic = _language == 'ar';
+    final isArabic = context.isArabic;
 
     List<Hazard> filteredHazards = _hazards.where((h) {
       if (h.typeId == 1 && !_showPotholes) return false;
@@ -286,11 +326,13 @@ class _MapScreenState extends State<MapScreen> {
 
     List<WeightedLatLng> heatmapPoints = filteredHazards.map((h) => WeightedLatLng(h.location, 1.0)).toList();
 
-    String currentTileUrl = 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}'; 
+    // `hl` makes the map labels follow the app language.
+    final String tileLang = isArabic ? 'ar' : 'en';
+    String currentTileUrl = 'https://mt1.google.com/vt/lyrs=m&hl=$tileLang&x={x}&y={y}&z={z}';
     if (_selectedMapStyle == 'satellite') {
-      currentTileUrl = 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'; 
+      currentTileUrl = 'https://mt1.google.com/vt/lyrs=y&hl=$tileLang&x={x}&y={y}&z={z}';
     } else if (_selectedMapStyle == 'terrain') {
-      currentTileUrl = 'https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}'; 
+      currentTileUrl = 'https://mt1.google.com/vt/lyrs=p&hl=$tileLang&x={x}&y={y}&z={z}';
     }
 
     return Directionality(
@@ -404,12 +446,13 @@ class _MapScreenState extends State<MapScreen> {
                 
                 _buildSearchBar(isArabic),
                 _buildMyLocationButton(),
+                _buildRefreshButton(isArabic),
 
                 if (_isLoading) const Center(child: CircularProgressIndicator(color: Color(0xFFFFD700))),
               ],
             ),
-            
-            MyReportsScreen(language: _language),
+
+            MyReportsScreen(language: _language, isActive: _selectedIndex == 1),
             Center(
               child: Text(
                 isArabic ? 'الإشعارات' : 'Notifications',
@@ -483,6 +526,22 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  /// Manual refresh of the hazard markers.
+  Widget _buildRefreshButton(bool isArabic) {
+    return Positioned(
+      bottom: 200,
+      right: 16,
+      child: FloatingActionButton(
+        heroTag: "refresh_hazards_btn",
+        mini: true,
+        tooltip: isArabic ? 'تحديث البلاغات' : 'Refresh reports',
+        backgroundColor: const Color(0xFF1E1E1E),
+        onPressed: _fetchLiveHazards,
+        child: const Icon(Icons.refresh, color: Color(0xFFFFD700)),
+      ),
+    );
+  }
+
   // ==========================================
   // GOOGLE MAPS STYLE FILTER MENU
   // ==========================================
@@ -548,10 +607,10 @@ class _MapScreenState extends State<MapScreen> {
                         alignment: WrapAlignment.start,
                         children: [
                           _buildDetailCard(isArabic ? 'حرارية' : 'Heatmap', _showHeatmap, () { setModalState(() => _showHeatmap = !_showHeatmap); setState((){}); }, '🔥'),
-                          _buildDetailCard(isArabic ? 'حفر ($potholeCount)' : 'Potholes', _showPotholes, () { setModalState(() => _showPotholes = !_showPotholes); setState((){}); }, '🕳️'),
-                          _buildDetailCard(isArabic ? 'تشقق ($crackCount)' : 'Cracks', _showCracks, () { setModalState(() => _showCracks = !_showCracks); setState((){}); }, '⚡'),
-                          _buildDetailCard(isArabic ? 'باهتة ($fadedLinesCount)' : 'Faded', _showFadedLines, () { setModalState(() => _showFadedLines = !_showFadedLines); setState((){}); }, '〰️'),
-                          _buildDetailCard(isArabic ? 'مناهل ($manholeCount)' : 'Manholes', _showBrokenManholes, () { setModalState(() => _showBrokenManholes = !_showBrokenManholes); setState((){}); }, '🚧'),
+                          _buildDetailCard(isArabic ? 'حفر ($potholeCount)' : 'Potholes ($potholeCount)', _showPotholes, () { setModalState(() => _showPotholes = !_showPotholes); setState((){}); }, '🕳️'),
+                          _buildDetailCard(isArabic ? 'تشقق ($crackCount)' : 'Cracks ($crackCount)', _showCracks, () { setModalState(() => _showCracks = !_showCracks); setState((){}); }, '⚡'),
+                          _buildDetailCard(isArabic ? 'باهتة ($fadedLinesCount)' : 'Faded ($fadedLinesCount)', _showFadedLines, () { setModalState(() => _showFadedLines = !_showFadedLines); setState((){}); }, '〰️'),
+                          _buildDetailCard(isArabic ? 'مناهل ($manholeCount)' : 'Manholes ($manholeCount)', _showBrokenManholes, () { setModalState(() => _showBrokenManholes = !_showBrokenManholes); setState((){}); }, '🚧'),
                           
                           _buildDetailCard(isArabic ? 'عالية' : 'High', _showHighSeverity, () { setModalState(() => _showHighSeverity = !_showHighSeverity); setState((){}); }, '🔴'),
                           _buildDetailCard(isArabic ? 'متوسطة' : 'Medium', _showMediumSeverity, () { setModalState(() => _showMediumSeverity = !_showMediumSeverity); setState((){}); }, '🟡'),
@@ -649,47 +708,10 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  String _getDamageTypeName(int typeId, {String? apiTypeName}) {
-    final normalized = apiTypeName?.trim();
-    if (normalized != null && normalized.isNotEmpty) {
-      if (_language == 'ar') return _translateHazardTypeName(normalized);
-      return normalized;
-    }
-
-    switch (typeId) {
-      case 1: return _language == 'ar' ? 'حفرة' : 'Pothole';
-      case 2: return _language == 'ar' ? 'تشقق' : 'Crack';
-      case 3: return _language == 'ar' ? 'خطوط باهتة' : 'Faded Lines';
-      case 4: return _language == 'ar' ? 'مناهل مكسورة' : 'Broken Manhole';
-      default: return _language == 'ar' ? 'أخرى' : 'Other';
-    }
-  }
-
-  String _getStatusName(Hazard hazard) {
-    final apiStatusName = hazard.statusName?.trim();
-    if (apiStatusName != null && apiStatusName.isNotEmpty) {
-      if (_language == 'ar') return _translateStatusName(apiStatusName);
-      return apiStatusName;
-    }
-
-    switch (hazard.statusId) {
-      case 1:
-        return _language == 'ar' ? 'قيد المراجعة' : 'Pending';
-      case 2:
-        return _language == 'ar' ? 'قيد العمل' : 'In Progress';
-      case 3:
-        return _language == 'ar' ? 'محلول' : 'Resolved';
-      case 4:
-        return _language == 'ar' ? 'بلاغ غير صحيح' : 'Incorrect Report';
-      default:
-        return _language == 'ar' ? 'غير معروف' : 'Unknown';
-    }
-  }
-
   void _showHazardDetails(BuildContext context, Hazard hazard) {
     final isArabic = _language == 'ar';
-    final typeName = _getDamageTypeName(hazard.typeId, apiTypeName: hazard.typeName);
-    final statusName = _getStatusName(hazard);
+    final typeName = HazardLabels.type(hazard, isArabic);
+    final statusName = HazardLabels.status(hazard, isArabic);
     String addressText = '${hazard.location.latitude.toStringAsFixed(5)}, ${hazard.location.longitude.toStringAsFixed(5)}';
     bool isTranslatingLocation = true;
 
@@ -704,7 +726,10 @@ class _MapScreenState extends State<MapScreen> {
             if (isTranslatingLocation) {
               isTranslatingLocation = false; 
               placemarkFromCoordinates(hazard.location.latitude, hazard.location.longitude).then((placemarks) {
-                if (placemarks.isNotEmpty) setStateBottomSheet(() => addressText = "${placemarks[0].street}, ${placemarks[0].locality}");
+                if (placemarks.isNotEmpty) {
+                  final text = formatPlacemark(placemarks[0]);
+                  if (text.isNotEmpty) setStateBottomSheet(() => addressText = text);
+                }
               }).catchError((e) { debugPrint("Could not translate location."); });
             }
 
@@ -759,7 +784,7 @@ class _MapScreenState extends State<MapScreen> {
                     const SizedBox(height: 16),
                     _buildDetailRow(Icons.location_on, isArabic ? 'الموقع:' : 'Location:', addressText),
                     const SizedBox(height: 16),
-                    _buildDetailRow(Icons.people_alt_outlined, isArabic ? 'عدد التبليغات:' : 'Reports Count:', '${hazard.detectionCount} ${isArabic ? 'مرات' : 'times'}'),
+                    _buildDetailRow(Icons.people_alt_outlined, isArabic ? 'عدد التبليغات:' : 'Reports Count:', timesLabel(hazard.detectionCount, isArabic)),
                     const SizedBox(height: 30),
                   ],
                 ),
@@ -781,45 +806,5 @@ class _MapScreenState extends State<MapScreen> {
         Expanded(child: Text(value, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold))),
       ],
     );
-  }
-
-  String _translateHazardTypeName(String englishName) {
-    final normalized = englishName.toLowerCase().trim();
-    switch (normalized) {
-      case 'pothole':
-        return 'حفرة';
-      case 'crack':
-        return 'تشقق';
-      case 'faded lines':
-        return 'خطوط باهتة';
-      case 'broken manhole':
-        return 'مناهل مكسورة';
-      case 'street light failure':
-        return 'تعطل إنارة الشارع';
-      case 'water leakage':
-        return 'تسرب مياه';
-      case 'other':
-        return 'أخرى';
-      default:
-        return englishName;
-    }
-  }
-
-  String _translateStatusName(String englishName) {
-    final normalized = englishName.toLowerCase().trim();
-    switch (normalized) {
-      case 'pending':
-        return 'قيد المراجعة';
-      case 'in progress':
-        return 'قيد العمل';
-      case 'resolved':
-        return 'محلول';
-      case 'incorrect report':
-        return 'بلاغ غير صحيح';
-      case 'rejected (ai)':
-        return 'مرفوض';
-      default:
-        return englishName;
-    }
   }
 }
