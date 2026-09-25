@@ -242,13 +242,14 @@ backbone was frozen.
   stays alive and idle. Returning restarts the stream with no warm-up.
 - **Startup.** `main.dart` starts the worker without awaiting it; the first
   screen appears immediately and the camera screen finds the model ready.
-- **Bench harness.** Long-press the AI panel to cycle model asset × GPU/CPU
-  preference; the 2-second line shows the effect. Do not long-press during a
-  demo.
+- **Bench harness.** The on-screen diagnostics panel and its long-press
+  model/backend switch were removed (drivers only see the HUD). To bench
+  another export or backend, change `TFLiteService.defaultModelAsset` / the
+  GPU preference and read the 2-second line in logcat (`flutter logs`).
 
 ---
 
-## 6. Diagnostics line (AI panel, every 2 s, also in logcat)
+## 6. Diagnostics line (every 2 s, in logcat via `flutter logs`)
 
 ```
 AI GPU | proc 11.5 fps (cam 29.8, drop 61%) | pre 9 set 1 inv 52 post 1 | total 63 rt 71 ms | jank 0/120 | 720x480 | score 0.41 boxes 1 | ep:active hit:180ms peak:0.38
@@ -310,7 +311,7 @@ Static analysis: `flutter analyze` (changed files are lint-clean; a few
 pre-existing info-level lints remain in untouched screens).
 
 On-device protocol (see the roadmap for acceptance criteria): release APK,
-read the AI panel line for backend and FPS, trigger one report and confirm the
+read the 2-second diagnostics line in logcat for backend and FPS, trigger one report and confirm the
 photo is upright, then a fixed route with known potholes while collecting
 `episodes.jsonl`.
 
@@ -321,7 +322,7 @@ photo is upright, then a fixed route with known potholes while collecting
 These are designed for and expected to work, but no phone has run this code:
 
 - GPU delegate acceptance on target chipsets (fallback chain covers failure).
-- Whether XNNPACK FP16 engages (panel shows `CPU/XNNPACK-fp16` when it does).
+- Whether XNNPACK FP16 engages (the diagnostics line shows `CPU/XNNPACK-fp16` when it does).
 - The rotation sign (`sensor − device`) for the back camera. The first report
   photo confirms it; if it is rotated, fix `_updateRotation` in the screen.
 - Actual FPS numbers; the ranges in this document are estimates.

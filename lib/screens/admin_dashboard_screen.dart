@@ -1,9 +1,12 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:intl_phone_field/intl_phone_field.dart';
 import 'package:geocoding/geocoding.dart';
 import '../services/api_service.dart';
+import '../services/report_events.dart';
+import '../utils/formatters.dart';
+import '../utils/hazard_labels.dart';
+import '../widgets/app_phone_field.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
@@ -42,14 +45,31 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    // Refetch whenever a report is created or a status changes anywhere.
+    ReportEvents.version.addListener(_loadReports);
     _loadReports();
+  }
+
+  @override
+  void dispose() {
+    ReportEvents.version.removeListener(_loadReports);
+    _tabController.dispose();
+    _nameController.dispose();
+    _nationalIdController.dispose();
+    _dobController.dispose();
+    _phoneController.dispose();
+    _passwordController.dispose();
+    super.dispose();
   }
 
   /// Uses the backend's high-efficiency 'unsolved' endpoint!
   Future<void> _loadReports() async {
-    setState(() => _isLoadingReports = true);
-    final data = await ApiService.fetchUnsolvedHazards(language: ApiService.currentLanguage); 
-    
+    // Spinner only for the first load; refreshes swap the list in place.
+    if (_hazards.isEmpty && mounted) {
+      setState(() => _isLoadingReports = true);
+    }
+    final data = await ApiService.fetchUnsolvedHazards(language: ApiService.currentLanguage);
+
     if (mounted) {
       setState(() {
         _hazards = data;
@@ -87,34 +107,54 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
         ),
         
         Expanded(
-          child: displayHazards.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.check_circle_outline, size: 80, color: Colors.white24),
-                      const SizedBox(height: 16),
-                      Text(isArabic ? 'لا توجد بلاغات غير محلولة حالياً' : 'No unsolved reports found', style: const TextStyle(color: Colors.white54, fontSize: 18)),
-                    ],
+          child: RefreshIndicator(
+            color: const Color(0xFFFFD700),
+            backgroundColor: const Color(0xFF1E1E1E),
+            onRefresh: _loadReports,
+            child: displayHazards.isEmpty
+                // Scrollable even when empty so pull-to-refresh works.
+                ? LayoutBuilder(
+                    builder: (context, constraints) => ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        SizedBox(
+                          height: constraints.maxHeight,
+                          child: Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.check_circle_outline, size: 80, color: Colors.white24),
+                                const SizedBox(height: 16),
+                                Text(isArabic ? 'لا توجد بلاغات غير محلولة حالياً' : 'No unsolved reports found', style: const TextStyle(color: Colors.white54, fontSize: 18)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   )
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.only(left: 16, right: 16, bottom: 40),
-                  itemCount: displayHazards.length,
-                  itemBuilder: (context, index) {
-                    final hazard = displayHazards[index];
-                    return _buildAdminReportCard(hazard);
-                  },
-                ),
+                : ListView.builder(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.only(left: 16, right: 16, bottom: 40),
+                    itemCount: displayHazards.length,
+                    itemBuilder: (context, index) {
+                      final hazard = displayHazards[index];
+                      return _buildAdminReportCard(hazard);
+                    },
+                  ),
+          ),
         ),
       ],
     );
   }
 
   Widget _buildAdminReportCard(Hazard hazard) {
-    final String typeName = _getHazardName(hazard, isArabic);
-    final String statusText = _getStatusText(hazard, isArabic);
-    final Color statusColor = _getStatusColor(hazard.statusId);
+    final String typeName = HazardLabels.type(hazard, isArabic);
+    final String statusText = HazardLabels.status(hazard, isArabic);
+    final Color statusColor = HazardLabels.statusColor(hazard.statusId);
+    final String shortId = hazard.id.length > 8
+        ? '${hazard.id.substring(0, 8)}...'
+        : hazard.id;
 
     return Card(
       color: Colors.white.withValues(alpha: 0.05),
@@ -159,7 +199,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('ID: ${hazard.id.substring(0, 8)}...', style: const TextStyle(color: Colors.white54, fontSize: 12, fontFamily: 'monospace')),
+                      Text('${isArabic ? 'المعرف' : 'ID'}: $shortId', style: const TextStyle(color: Colors.white54, fontSize: 12, fontFamily: 'monospace')),
                       const SizedBox(height: 8),
                       
                       Row(
@@ -172,7 +212,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                               future: _getAddress(hazard.location.latitude, hazard.location.longitude),
                               builder: (context, snapshot) {
                                 if (snapshot.connectionState == ConnectionState.waiting) return Text(isArabic ? 'جاري ترجمة الموقع...' : 'Translating GPS...', style: const TextStyle(color: Colors.white54, fontSize: 12, fontStyle: FontStyle.italic));
-                                return Text(snapshot.data ?? (isArabic ? 'غير معروف' : 'Unknown'), style: const TextStyle(color: Colors.white70, fontSize: 13));
+                                return Text(snapshot.data ?? unknownLabel(isArabic), style: const TextStyle(color: Colors.white70, fontSize: 13));
                               },
                             ),
                           ),
@@ -202,9 +242,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
             Wrap(
               spacing: 8, runSpacing: 8,
               children: [
-                if (hazard.statusId != 2) _statusButton(hazard.id, 2, isArabic ? 'قيد العمل' : 'In Progress', Colors.blue),
-                if (hazard.statusId != 3) _statusButton(hazard.id, 3, isArabic ? 'محلول' : 'Resolved', Colors.green),
-                if (hazard.statusId != 4) _statusButton(hazard.id, 4, isArabic ? 'خطأ ذكاء اصطناعي' : 'AI False Positive', Colors.red), 
+                if (hazard.statusId != 2) _statusButton(hazard.id, 2, HazardLabels.statusById(2, isArabic), Colors.blue),
+                if (hazard.statusId != 3) _statusButton(hazard.id, 3, HazardLabels.statusById(3, isArabic), Colors.green),
+                if (hazard.statusId != 4) _statusButton(hazard.id, 4, HazardLabels.statusById(4, isArabic), Colors.red),
               ],
             )
           ],
@@ -256,20 +296,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
           
           Padding(
             padding: const EdgeInsets.only(bottom: 16.0),
-            child: IntlPhoneField(
+            child: AppPhoneField(
               controller: _phoneController,
-              dropdownIcon: const Icon(Icons.arrow_drop_down, color: Color(0xFFFFD700)),
-              dropdownTextStyle: const TextStyle(color: Colors.white, fontSize: 16),
-              style: const TextStyle(color: Colors.white),
-              initialCountryCode: 'JO',
-              decoration: InputDecoration(
-                labelText: isArabic ? "رقم الهاتف" : "Phone Number",
-                labelStyle: const TextStyle(color: Colors.white54),
-                enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.2)), borderRadius: BorderRadius.circular(10)),
-                focusedBorder: OutlineInputBorder(borderSide: const BorderSide(color: Color(0xFFFFD700)), borderRadius: BorderRadius.circular(10)),
-              ),
+              labelText: isArabic ? "رقم الهاتف" : "Phone Number",
               onChanged: (phone) {
-                _fullPhoneNumber = phone.completeNumber; 
+                _fullPhoneNumber = phone.completeNumber;
               },
             ),
           ),
@@ -304,7 +335,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
                         icon: const Icon(Icons.security, size: 20),
                         style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                         onPressed: () => _handleCreateAccount(true),
-                        label: Text(isArabic ? 'عمل حساب مسؤول ' : 'Create Admin Account', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        label: Text(isArabic ? 'إنشاء حساب مسؤول' : 'Create Admin Account', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                       ),
                     ),
                 ],
@@ -346,9 +377,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
           newStatus,
           language: ApiService.currentLanguage,
         );
+        if (!mounted) return;
         if (success) {
+          // The list refetches through ReportEvents.
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(successMessage), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating));
-          _loadReports(); 
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(failureMessage), backgroundColor: Colors.red, behavior: SnackBarBehavior.floating));
         }
@@ -360,55 +392,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
     try {
       List<Placemark> placemarks = await placemarkFromCoordinates(lat, lng);
       if (placemarks.isNotEmpty) {
-        Placemark place = placemarks.first;
-        return "${place.street}, ${place.locality}";
+        final text = formatPlacemark(placemarks.first);
+        if (text.isNotEmpty) return text;
       }
     } catch (e) {
       debugPrint("Address Error: $e");
     }
     return "${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}";
-  }
-
-  String _getStatusText(Hazard hazard, bool isArabic) {
-    final apiName = hazard.statusName?.trim();
-    if (apiName != null && apiName.isNotEmpty) {
-      return isArabic ? _translateStatusName(apiName) : apiName;
-    }
-
-    final statusId = hazard.statusId;
-    switch (statusId) {
-      case 1: return isArabic ? 'قيد المراجعة' : 'Pending';
-      case 2: return isArabic ? 'قيد العمل' : 'In Progress';
-      case 3: return isArabic ? 'محلول' : 'Resolved';
-      case 4: return isArabic ? 'مرفوض' : 'Rejected (AI)';
-      default: return isArabic ? 'غير معروف' : 'Unknown';
-    }
-  }
-
-  Color _getStatusColor(int statusId) {
-    switch (statusId) {
-      case 1: return const Color(0xFFFFD700); 
-      case 2: return Colors.blueAccent;       
-      case 3: return Colors.greenAccent;      
-      case 4: return Colors.redAccent;        
-      default: return Colors.grey;
-    }
-  }
-
-  String _getHazardName(Hazard hazard, bool isArabic) {
-    final apiName = hazard.typeName?.trim();
-    if (apiName != null && apiName.isNotEmpty) {
-      return isArabic ? _translateHazardTypeName(apiName) : apiName;
-    }
-
-    final typeId = hazard.typeId;
-    switch (typeId) {
-      case 1: return isArabic ? 'حفرة' : 'Pothole';
-      case 2: return isArabic ? 'تشقق' : 'Crack';
-      case 3: return isArabic ? 'خطوط باهتة' : 'Faded Lines';
-      case 4: return isArabic ? 'مناهل مكسورة' : 'Broken Manhole';
-      default: return isArabic ? 'نوع غير معروف' : 'Unknown Hazard';
-    }
   }
 
   Future<void> _selectDate(BuildContext context) async {
@@ -466,46 +456,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> with Single
         ),
       ),
     );
-  }
-
-  String _translateHazardTypeName(String englishName) {
-    final normalized = englishName.toLowerCase().trim();
-    switch (normalized) {
-      case 'pothole':
-        return 'حفرة';
-      case 'crack':
-        return 'تشقق';
-      case 'faded lines':
-        return 'خطوط باهتة';
-      case 'broken manhole':
-        return 'مناهل مكسورة';
-      case 'street light failure':
-        return 'تعطل إنارة الشارع';
-      case 'water leakage':
-        return 'تسرب مياه';
-      case 'other':
-        return 'أخرى';
-      default:
-        return englishName;
-    }
-  }
-
-  String _translateStatusName(String englishName) {
-    final normalized = englishName.toLowerCase().trim();
-    switch (normalized) {
-      case 'pending':
-        return 'قيد المراجعة';
-      case 'in progress':
-        return 'قيد العمل';
-      case 'resolved':
-        return 'محلول';
-      case 'incorrect report':
-        return 'بلاغ غير صحيح';
-      case 'rejected (ai)':
-        return 'مرفوض';
-      default:
-        return englishName;
-    }
   }
 
   /// 🚨 FIXED: Now sends all 5 arguments to the API Service!

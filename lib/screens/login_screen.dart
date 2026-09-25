@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:country_picker/country_picker.dart';
 import 'map_screen.dart';
 import '../services/api_service.dart';
+import '../services/app_language.dart';
 import 'register_screen.dart';
 
 /// The initial authentication screen for the Rased (راصد) application.
@@ -21,20 +22,16 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _passwordController = TextEditingController();
   bool _isLoading = false;
 
-  late String _language = ApiService.currentLanguage;
-
-  /// Toggles the global application language between English and Arabic.
+  /// Toggles the app language between English and Arabic. The choice is
+  /// saved, and MaterialApp re-localizes everything (including this route).
   void _toggleLanguage() {
-    setState(() {
-      _language = _language == 'en' ? 'ar' : 'en';
-      ApiService.currentLanguage = _language;
-    });
+    AppLanguage.toggle();
   }
 
   /// Processes the login request.
-  /// 
+  ///
   void _handleLogin() async {
-    final isArabic = _language == 'ar';
+    final isArabic = AppLanguage.isArabic;
 
     // 1. Validate inputs to prevent unnecessary API calls
     if (_nationalIdController.text.isEmpty || _passwordController.text.isEmpty) {
@@ -61,7 +58,6 @@ class _LoginScreenState extends State<LoginScreen> {
     bool success = await ApiService.login(
       nationalId,
       _passwordController.text.trim(),
-      language: _language,
     );
 
     if (!mounted) return;
@@ -69,23 +65,19 @@ class _LoginScreenState extends State<LoginScreen> {
 
     // 3. Handle authentication response
     if (success) {
-      ApiService.currentLanguage = _language; // Lock in the language preference
-
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => const MapScreen()),
       );
     } else {
-      final apiError = ApiService.lastAuthError;
+      final failure = ApiService.lastAuthFailure;
+      final text = failure?.message(isArabic) ??
+          (isArabic
+              ? 'الرقم الوطني أو كلمة المرور غير صحيحة!'
+              : 'Invalid National ID or password!');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            apiError?.isNotEmpty == true
-                ? '❌ $apiError'
-                : (isArabic
-                    ? '❌ الرقم الوطني أو كلمة المرور غير صحيحة!'
-                    : '❌ Invalid National ID or password!'),
-          ),
+          content: Text('❌ $text'),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -286,21 +278,21 @@ class _LoginScreenState extends State<LoginScreen> {
   // ==========================================
   @override
   Widget build(BuildContext context) {
-    final isArabic = _language == 'ar';
+    // Text direction comes from MaterialApp's locale, so the AppBar-less
+    // scaffold, SnackBars and dialogs all follow the same direction.
+    final isArabic = context.isArabic;
 
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
-          child: Directionality(
-            textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
-            child: Column(
+          child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 // --- LANGUAGE BUTTON ---
                 Align(
-                  alignment: isArabic ? Alignment.topLeft : Alignment.topRight,
+                  alignment: AlignmentDirectional.topEnd,
                   child: TextButton.icon(
                     onPressed: _toggleLanguage,
                     icon: const Icon(Icons.language, color: Colors.white70),
@@ -371,7 +363,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                           // Forgot Password Button
                           Align(
-                            alignment: isArabic ? Alignment.centerLeft : Alignment.centerRight,
+                            alignment: AlignmentDirectional.centerEnd,
                             child: TextButton(
                               onPressed: _showForgotPasswordChoiceDialog,
                               child: Text(
@@ -412,7 +404,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   // Wait for the Register screen to return the National ID
                                   final registeredId = await Navigator.push(
                                     context,
-                                    MaterialPageRoute(builder: (context) => RegisterScreen(language: _language)),
+                                    MaterialPageRoute(builder: (context) => RegisterScreen(language: ApiService.currentLanguage)),
                                   );
                                   
                                   // If the user registered successfully, auto-fill the login box!
@@ -436,7 +428,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               ],
-            ),
           ),
         ),
       ),

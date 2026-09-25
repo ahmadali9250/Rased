@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'login_screen.dart'; // Ensure this file exists and contains LoginScreen
+import '../services/api_service.dart';
+import '../services/app_language.dart';
+import '../services/prefs_keys.dart';
+import 'login_screen.dart';
+import 'map_screen.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -12,7 +16,6 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController _pageController = PageController(initialPage: 0);
   int _currentPage = 0;
-  bool isArabic = true;
 
   final List<Map<String, dynamic>> onboardingData = [
     {
@@ -53,17 +56,24 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Future<void> _completeOnboarding() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('has_seen_onboarding', true);
-    
+    // Same key that main.dart reads; a mismatch here once made the app show
+    // onboarding (and then login) on every cold start.
+    await prefs.setBool(PrefsKeys.hasSeenOnboarding, true);
+
     if (!mounted) return;
+    // A saved session skips the login screen.
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (context) => const LoginScreen()),
+      MaterialPageRoute(
+        builder: (context) =>
+            ApiService.isLoggedIn ? const MapScreen() : const LoginScreen(),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final isArabic = context.isArabic;
     return Directionality(
       textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
       child: Scaffold(
@@ -74,9 +84,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
                 child: Align(
-                  alignment: isArabic ? Alignment.centerLeft : Alignment.centerRight,
+                  alignment: AlignmentDirectional.centerEnd,
                   child: TextButton(
-                    onPressed: () => setState(() => isArabic = !isArabic),
+                    onPressed: AppLanguage.toggle,
                     child: Text(
                       isArabic ? "English" : "العربية",
                       style: const TextStyle(color: Color(0xFFFFD700), fontWeight: FontWeight.bold, fontSize: 16),
@@ -175,7 +185,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Widget _buildDot({required int index}) {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
-      margin: const EdgeInsets.only(right: 5),
+      margin: const EdgeInsetsDirectional.only(end: 5),
       height: 8,
       width: _currentPage == index ? 24 : 8,
       decoration: BoxDecoration(

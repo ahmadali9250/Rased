@@ -2,12 +2,27 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
 import '../services/api_service.dart';
+import '../services/app_language.dart';
+import '../services/report_events.dart';
+import '../utils/formatters.dart';
+import '../utils/hazard_labels.dart';
 
 /// Displays a historical list of hazards specifically reported by the logged-in user.
+///
+/// Refreshes on: pull-down, the refresh button, the tab becoming visible,
+/// a language change, and every [ReportEvents] bump (a report was sent or an
+/// admin changed a status), so a new report shows up without re-login.
 class MyReportsScreen extends StatefulWidget {
   final String language;
 
-  const MyReportsScreen({super.key, required this.language});
+  /// True while this tab is the visible one. Turning true refetches.
+  final bool isActive;
+
+  const MyReportsScreen({
+    super.key,
+    required this.language,
+    this.isActive = true,
+  });
 
   @override
   State<MyReportsScreen> createState() => _MyReportsScreenState();
@@ -18,10 +33,20 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
   bool _isLoading = true;
   late String _language = widget.language;
 
+  Future<void>? _inFlight;
+  bool _refetchQueued = false;
+
   @override
   void initState() {
     super.initState();
+    ReportEvents.version.addListener(_onReportsChanged);
     _fetchMyReports();
+  }
+
+  @override
+  void dispose() {
+    ReportEvents.version.removeListener(_onReportsChanged);
+    super.dispose();
   }
 
   @override
@@ -30,19 +55,39 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     if (oldWidget.language != widget.language) {
       _language = widget.language;
       _fetchMyReports();
+    } else if (!oldWidget.isActive && widget.isActive) {
+      _fetchMyReports();
     }
   }
 
-  /// FIXED: Now explicitly calls the backend developer's new 'my-reports' endpoint!
-  Future<void> _fetchMyReports() async {
-    final myData = await ApiService.fetchMyReports(language: _language);
+  void _onReportsChanged() => _fetchMyReports();
 
-    if (mounted) {
-      setState(() {
-        _myReports = myData; 
-        _isLoading = false;
-      });
+  /// One request at a time; a call during a fetch schedules one more after
+  /// it, so the newest server state always lands.
+  Future<void> _fetchMyReports() {
+    final running = _inFlight;
+    if (running != null) {
+      _refetchQueued = true;
+      return running;
     }
+    final future = _load().whenComplete(() {
+      _inFlight = null;
+      if (_refetchQueued) {
+        _refetchQueued = false;
+        _fetchMyReports();
+      }
+    });
+    _inFlight = future;
+    return future;
+  }
+
+  Future<void> _load() async {
+    final myData = await ApiService.fetchMyReports(language: _language);
+    if (!mounted) return;
+    setState(() {
+      _myReports = myData;
+      _isLoading = false;
+    });
   }
 
   // --- Translates GPS to Street Names ---
@@ -50,8 +95,8 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     try {
       List<Placemark> placemarks = await placemarkFromCoordinates(lat, lng);
       if (placemarks.isNotEmpty) {
-        Placemark place = placemarks.first;
-        return "${place.street}, ${place.locality}";
+        final text = formatPlacemark(placemarks.first);
+        if (text.isNotEmpty) return text;
       }
     } catch (e) {
       debugPrint("Could not find address: $e");
@@ -59,54 +104,9 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     return "${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}";
   }
 
-  /// Translates the Status ID from the database into a readable label.
-  String _getStatusText(Hazard hazard, bool isArabic) {
-    final apiName = hazard.statusName?.trim();
-    if (apiName != null && apiName.isNotEmpty) {
-      return isArabic ? _translateStatusName(apiName) : apiName;
-    }
-
-    final statusId = hazard.statusId;
-    switch (statusId) {
-      case 1: return isArabic ? 'قيد المراجعة' : 'Pending';
-      case 2: return isArabic ? 'قيد العمل' : 'In Progress';
-      case 3: return isArabic ? 'محلول' : 'Resolved';
-      case 4: return isArabic ? 'مرفوض' : 'Rejected (AI)';
-      default: return isArabic ? 'غير معروف' : 'Unknown';
-    }
-  }
-
-  /// Maps the Status ID to a specific color for the UI badge.
-  Color _getStatusColor(int statusId) {
-    switch (statusId) {
-      case 1: return const Color(0xFFFFD700); // Yellow/Gold
-      case 2: return Colors.blueAccent;       // Blue
-      case 3: return Colors.greenAccent;      // Green
-      case 4: return Colors.redAccent;        // Red
-      default: return Colors.grey;
-    }
-  }
-
-  /// Translates the Hazard Type ID from the database into a readable label.
-  String _getHazardName(Hazard hazard, bool isArabic) {
-    final apiName = hazard.typeName?.trim();
-    if (apiName != null && apiName.isNotEmpty) {
-      return isArabic ? _translateHazardTypeName(apiName) : apiName;
-    }
-
-    final typeId = hazard.typeId;
-    switch (typeId) {
-      case 1: return isArabic ? 'حفرة' : 'Pothole';
-      case 2: return isArabic ? 'تشقق' : 'Crack';
-      case 3: return isArabic ? 'خطوط باهتة' : 'Faded Lines';
-      case 4: return isArabic ? 'مناهل مكسورة' : 'Broken Manhole';
-      default: return isArabic ? 'نوع غير معروف' : 'Unknown Hazard';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final isArabic = _language == 'ar';
+    final isArabic = context.isArabic;
 
     return Directionality(
       textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
@@ -121,44 +121,76 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
           ),
           centerTitle: true,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: isArabic ? 'تحديث' : 'Refresh',
+              onPressed: _fetchMyReports,
+            ),
+          ],
         ),
-        body: _isLoading
-            ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFD700)))
-            : _myReports.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.receipt_long, size: 80, color: Colors.white24),
-                        const SizedBox(height: 16),
-                        Text(
-                          isArabic ? "لا توجد بلاغات حتى الآن!" : "No reports yet!",
-                          style: const TextStyle(color: Colors.white54, fontSize: 18),
-                        ),
-                      ],
+        body: RefreshIndicator(
+          color: const Color(0xFFFFD700),
+          backgroundColor: const Color(0xFF1E1E1E),
+          onRefresh: _fetchMyReports,
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFD700)))
+              : _myReports.isEmpty
+                  ? _buildEmptyState(isArabic)
+                  : ListView.builder(
+                      physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                      padding: const EdgeInsets.only(top: 20, left: 16, right: 16, bottom: 120), // Bottom padding prevents FAB overlap
+                      itemCount: _myReports.length,
+                      itemBuilder: (context, index) {
+                        final report = _myReports[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: _buildReportCard(report, isArabic),
+                        );
+                      },
                     ),
-                  )
-                : ListView.builder(
-                    physics: const BouncingScrollPhysics(),
-                    padding: const EdgeInsets.only(top: 20, left: 16, right: 16, bottom: 120), // Bottom padding prevents FAB overlap
-                    itemCount: _myReports.length,
-                    itemBuilder: (context, index) {
-                      final report = _myReports[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 16),
-                        child: _buildReportCard(report, isArabic),
-                      );
-                    },
+        ),
+      ),
+    );
+  }
+
+  /// Scrollable even when empty, so pull-to-refresh still works.
+  Widget _buildEmptyState(bool isArabic) {
+    return LayoutBuilder(
+      builder: (context, constraints) => ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          SizedBox(
+            height: constraints.maxHeight,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.receipt_long, size: 80, color: Colors.white24),
+                  const SizedBox(height: 16),
+                  Text(
+                    isArabic ? "لا توجد بلاغات حتى الآن!" : "No reports yet!",
+                    style: const TextStyle(color: Colors.white54, fontSize: 18),
                   ),
+                  const SizedBox(height: 8),
+                  Text(
+                    isArabic ? "اسحب للأسفل للتحديث" : "Pull down to refresh",
+                    style: const TextStyle(color: Colors.white38, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
   /// Builds a beautifully styled glassmorphism card for a single report.
   Widget _buildReportCard(Hazard report, bool isArabic) {
-    final String typeName = _getHazardName(report, isArabic);
-    final String statusText = _getStatusText(report, isArabic);
-    final Color statusColor = _getStatusColor(report.statusId);
+    final String typeName = HazardLabels.type(report, isArabic);
+    final String statusText = HazardLabels.status(report, isArabic);
+    final Color statusColor = HazardLabels.statusColor(report.statusId);
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
@@ -248,7 +280,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
                     ),
                     const SizedBox(height: 8),
 
-                    // Date Row
+                    // Date Row (the API has no timestamp yet)
                     Row(
                       children: [
                         const Icon(Icons.calendar_today, color: Colors.white54, size: 14),
@@ -267,45 +299,5 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
         ),
       ),
     );
-  }
-
-  String _translateHazardTypeName(String englishName) {
-    final normalized = englishName.toLowerCase().trim();
-    switch (normalized) {
-      case 'pothole':
-        return 'حفرة';
-      case 'crack':
-        return 'تشقق';
-      case 'faded lines':
-        return 'خطوط باهتة';
-      case 'broken manhole':
-        return 'مناهل مكسورة';
-      case 'street light failure':
-        return 'تعطل إنارة الشارع';
-      case 'water leakage':
-        return 'تسرب مياه';
-      case 'other':
-        return 'أخرى';
-      default:
-        return englishName;
-    }
-  }
-
-  String _translateStatusName(String englishName) {
-    final normalized = englishName.toLowerCase().trim();
-    switch (normalized) {
-      case 'pending':
-        return 'قيد المراجعة';
-      case 'in progress':
-        return 'قيد العمل';
-      case 'resolved':
-        return 'محلول';
-      case 'incorrect report':
-        return 'بلاغ غير صحيح';
-      case 'rejected (ai)':
-        return 'مرفوض';
-      default:
-        return englishName;
-    }
   }
 }

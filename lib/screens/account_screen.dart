@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../services/app_language.dart';
+import '../services/dry_run_mode.dart';
+import '../utils/formatters.dart';
 import 'login_screen.dart';
 import 'profile_details_screen.dart';
 import 'admin_dashboard_screen.dart';
@@ -56,11 +59,12 @@ class _AccountScreenState extends State<AccountScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isArabic = widget.language == 'ar';
-    
+    final isArabic = context.isArabic;
+
     // --- DYNAMIC USER DATA ---
     // Extracts the National ID from our synthetic email (e.g., 1234567890@rased.com)
-    final String nationalId = ApiService.loggedInEmail?.split('@')[0] ?? "Unknown";
+    final String nationalId =
+        ApiService.loggedInEmail?.split('@')[0] ?? unknownLabel(isArabic);
     final String displayName = isArabic ? "مواطن" : "Citizen";
 
     return Directionality(
@@ -134,7 +138,7 @@ class _AccountScreenState extends State<AccountScreen> {
                     ),
                     const Spacer(),
                     Icon(
-                      isArabic ? Icons.chevron_left : Icons.chevron_right,
+                      Icons.chevron_right, // auto-mirrors in RTL
                       color: Colors.white54,
                     ),
                   ],
@@ -160,7 +164,7 @@ class _AccountScreenState extends State<AccountScreen> {
                     ),
                     const SizedBox(width: 8),
                     Icon(
-                      isArabic ? Icons.chevron_left : Icons.chevron_right,
+                      Icons.chevron_right, // auto-mirrors in RTL
                       color: Colors.white54,
                     ),
                   ],
@@ -178,6 +182,20 @@ class _AccountScreenState extends State<AccountScreen> {
                 isArabic ? "الإشعارات" : "Notifications",
                 _notificationsEnabled,
                 (val) => setState(() => _notificationsEnabled = val),
+              ),
+              _buildDivider(),
+              // Live-camera test mode: detect and confirm, never upload.
+              ValueListenableBuilder<bool>(
+                valueListenable: DryRunMode.enabled,
+                builder: (_, enabled, _) => _buildSwitchTile(
+                  isArabic ? "وضع التجربة (بدون إرسال)" : "Test mode (no upload)",
+                  enabled,
+                  (val) => DryRunMode.set(val),
+                  subtitle: isArabic
+                      ? "الكشف يعمل، البلاغات لا تُرسل، والصور تُحفظ في المعرض"
+                      : "Detection runs, nothing is sent, photos go to the gallery",
+                  activeColor: Colors.purpleAccent,
+                ),
               ),
             ]),
             const SizedBox(height: 24),
@@ -234,8 +252,8 @@ class _AccountScreenState extends State<AccountScreen> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  trailing: Icon(
-                    isArabic ? Icons.chevron_left : Icons.chevron_right,
+                  trailing: const Icon(
+                    Icons.chevron_right, // auto-mirrors in RTL
                     color: Colors.white54,
                   ),
                   onTap: () {
@@ -313,8 +331,8 @@ class _AccountScreenState extends State<AccountScreen> {
       title: Text(title, style: const TextStyle(color: Colors.white)),
       trailing:
           trailing ??
-          Icon(
-            isArabic ? Icons.chevron_left : Icons.chevron_right,
+          const Icon(
+            Icons.chevron_right, // auto-mirrors in RTL
             color: Colors.white54,
           ),
       onTap: onTap,
@@ -325,14 +343,20 @@ class _AccountScreenState extends State<AccountScreen> {
   Widget _buildSwitchTile(
     String title,
     bool value,
-    ValueChanged<bool> onChanged,
-  ) {
+    ValueChanged<bool> onChanged, {
+    String? subtitle,
+    Color activeColor = const Color(0xFFFFD700),
+  }) {
     return SwitchListTile(
       title: Text(title, style: const TextStyle(color: Colors.white)),
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle,
+              style: const TextStyle(color: Colors.white54, fontSize: 12)),
       value: value,
       onChanged: onChanged,
       activeThumbColor: Colors.black,
-      activeTrackColor: const Color(0xFFFFD700),
+      activeTrackColor: activeColor,
       inactiveTrackColor: Colors.white12,
     );
   }

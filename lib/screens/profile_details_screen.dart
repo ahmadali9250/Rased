@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:intl_phone_field/intl_phone_field.dart';
 import '../services/api_service.dart';
+import '../services/app_language.dart';
+import '../utils/formatters.dart';
+import '../widgets/app_phone_field.dart';
 
 /// Displays the user's personal details.
 ///
@@ -130,7 +132,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
                   
                   // "Forgot Password" Escape Hatch
                   Align(
-                    alignment: isArabic ? Alignment.centerRight : Alignment.centerLeft,
+                    alignment: AlignmentDirectional.centerStart,
                     child: TextButton(
                       onPressed: () {
                         Navigator.pop(context);
@@ -312,10 +314,14 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isArabic = ApiService.currentLanguage == 'ar';
-    
+    final isArabic = context.isArabic;
+
     // Fallback ID if the backend doesn't provide it yet
-    final String nationalId = ApiService.loggedInEmail?.split('@')[0] ?? "Unknown";
+    final String nationalId =
+        ApiService.loggedInEmail?.split('@')[0] ?? unknownLabel(isArabic);
+    final String fullName = ApiService.userName.isEmpty
+        ? unknownLabel(isArabic)
+        : ApiService.userName;
 
     return Directionality(
       textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
@@ -333,7 +339,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             // --- 1. PROFILE PICTURE ---
             Center(
               child: Stack(
-                alignment: Alignment.bottomRight,
+                alignment: AlignmentDirectional.bottomEnd,
                 children: [
                   const CircleAvatar(radius: 50, backgroundColor: Color(0xFFFFD700), child: Icon(Icons.person, size: 60, color: Colors.black)),
                   Container(
@@ -348,33 +354,25 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
             // --- 2. LOCKED FIELDS (Trust Anchor) ---
             // ✅ Connected to dynamic API Service variable!
-            _buildLockedField(label: isArabic ? "الاسم الكامل" : "Full Name", value: ApiService.userName),
+            _buildLockedField(label: isArabic ? "الاسم الكامل" : "Full Name", value: fullName),
             const SizedBox(height: 16),
             _buildLockedField(label: isArabic ? "الرقم الوطني" : "ID Number", value: nationalId),
             const SizedBox(height: 16),
-            _buildLockedField(label: isArabic ? "تاريخ الميلاد" : "Date of Birth", value: "10/01/2006"), // TODO: Ask backend to add this later!
+            // The backend does not send a date of birth yet.
+            _buildLockedField(label: isArabic ? "تاريخ الميلاد" : "Date of Birth", value: isArabic ? "غير متوفر" : "Not available"),
             const SizedBox(height: 16),
             // ✅ Connected to dynamic API Service variable!
-            _buildLockedField(label: isArabic ? "نوع الحساب" : "Account Role", value: ApiService.userRole),
+            _buildLockedField(label: isArabic ? "نوع الحساب" : "Account Role", value: roleLabel(ApiService.userRole, isArabic)),
             const SizedBox(height: 16),
 
             // --- 3. EDITABLE FIELDS ---
             Text(isArabic ? "رقم الهاتف" : "Phone Number", style: const TextStyle(color: Colors.white70, fontSize: 14)),
             const SizedBox(height: 8),
             
-            // Standardized IntlPhoneField
-            IntlPhoneField(
+            // Standardized, localized phone field
+            AppPhoneField(
               controller: _phoneController,
-              dropdownIcon: const Icon(Icons.arrow_drop_down, color: Color(0xFFFFD700)),
-              dropdownTextStyle: const TextStyle(color: Colors.white, fontSize: 16),
-              style: const TextStyle(color: Colors.white),
-              initialCountryCode: 'JO', // Defaults to Jordan flag
-              decoration: InputDecoration(
-                filled: true, fillColor: Colors.transparent,
-                suffixIcon: const Icon(Icons.edit, color: Color(0xFFFFD700), size: 20),
-                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.white38)),
-                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFFFD700))),
-              ),
+              suffixIcon: const Icon(Icons.edit, color: Color(0xFFFFD700), size: 20),
               onChanged: (phone) {
                 _checkForChanges();
               },

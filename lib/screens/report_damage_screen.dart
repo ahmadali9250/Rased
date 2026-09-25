@@ -6,6 +6,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../services/tflite_service.dart';
 import '../services/api_service.dart';
+import '../services/app_language.dart';
+import '../utils/formatters.dart';
+import '../utils/hazard_labels.dart';
 
 /// The Manual Hazard Reporting Screen.
 ///
@@ -36,7 +39,8 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
   // Shared background AI worker (same instance as the live camera screen).
   final TFLiteService _tfliteService = TFLiteService.instance;
 
-  String _currentAddress = "Locating your position...";
+  /// Null until the first fix; the UI shows a translated "Locating..." then.
+  String? _currentAddress;
   double? _currentLat;
   double? _currentLng;
   bool _isLoadingLocation = true;
@@ -107,7 +111,7 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
         Placemark lp = lastPlacemarks[0];
         if (!mounted) return;
         setState(() {
-          _currentAddress = "${lp.street}, ${lp.locality}, ${lp.country}";
+          _currentAddress = formatPlacemark(lp, withCountry: true);
           _currentLat = lastKnown.latitude;
           _currentLng = lastKnown.longitude;
           _isLoadingLocation = true; // لا يزال يحدّث
@@ -125,7 +129,7 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
 
       if (mounted) {
         setState(() {
-          _currentAddress = "${place.street}, ${place.locality}, ${place.country}";
+          _currentAddress = formatPlacemark(place, withCountry: true);
           _currentLat = position.latitude;
           _currentLng = position.longitude;
           _isLoadingLocation = false;
@@ -237,7 +241,7 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isArabic = ApiService.currentLanguage == 'ar';
+    final isArabic = context.isArabic;
 
     return Directionality(
       textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
@@ -330,11 +334,9 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        isArabic
-                            ? 'الذكاء الاصطناعي رجّح: ${_translateDamageType(_selectedDamageType, true)} '
-                                '(${(_aiConfidence! * 100).toStringAsFixed(0)}%)'
-                            : 'AI suggests: $_selectedDamageType '
-                                '(${(_aiConfidence! * 100).toStringAsFixed(0)}%)',
+                        '${isArabic ? 'الذكاء الاصطناعي رجّح' : 'AI suggests'}: '
+                        '${HazardLabels.typeById(_getDamageTypeId(_selectedDamageType), isArabic)} '
+                        '(${(_aiConfidence! * 100).toStringAsFixed(0)}%)',
                         style: const TextStyle(
                             color: Colors.white70, fontSize: 13),
                       ),
@@ -355,7 +357,10 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        _currentAddress,
+                        _currentAddress ??
+                            (isArabic
+                                ? 'جاري تحديد موقعك...'
+                                : 'Locating your position...'),
                         style: const TextStyle(color: Colors.white70),
                       ),
                     ),
@@ -398,7 +403,7 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
                     items: _damageTypes.map((String type) {
                       return DropdownMenuItem<String>(
                         value: type,
-                        child: Text(_translateDamageType(type, isArabic)),
+                        child: Text(HazardLabels.typeById(_getDamageTypeId(type), isArabic)),
                       );
                     }).toList(),
                     onChanged: (String? newValue) {
@@ -548,10 +553,10 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
         );
         Navigator.pop(context); // Close screen, return to map
       } else {
-        // 🚨 Displays the EXACT error message from the database
+        // Shows the reason (server message or a translated code)
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(ApiService.lastReportError ??
+            content: Text(ApiService.lastReportFailure?.message(isArabic) ??
                 (isArabic
                     ? '❌ فشل الإرسال إلى الخادم.'
                     : '❌ Failed to upload to the server.')),
@@ -561,11 +566,12 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
         );
       }
     } catch (e) {
+      debugPrint('❌ Manual report submit crashed: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            isArabic ? 'حدث خطأ أثناء الإرسال: $e' : 'Error while submitting: $e',
+            isArabic ? 'حدث خطأ أثناء الإرسال' : 'Error while submitting',
           ),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
@@ -602,20 +608,7 @@ class _ReportDamageScreenState extends State<ReportDamageScreen> {
     );
   }
 
-  // 🚨 FIXED: Removed "Other" and "Faded Lines" translations.
-  String _translateDamageType(String type, bool isArabic) {
-    if (!isArabic) return type;
-    switch (type) {
-      case 'Pothole':
-        return 'حفرة';
-      case 'Crack':
-        return 'تشقق';
-      case 'Broken Manhole':
-        return 'منهل';
-      default:
-        return 'حفرة';
-    }
-  }
+  // Display names come from HazardLabels (same wording as the map and lists).
 
   // 🚨 FIXED: Removed unused mappings. Now strictly maps to 1, 2, and 4.
   int _getDamageTypeId(String type) {

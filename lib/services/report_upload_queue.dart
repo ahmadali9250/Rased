@@ -29,10 +29,16 @@ class PendingReport {
 enum ReportOutcomeKind { sent, failed, savedOffline, noLocation }
 
 class ReportOutcome {
-  ReportOutcome(this.kind, {this.message}) : at = DateTime.now();
+  ReportOutcome(this.kind, {this.failure, this.debugDetail})
+      : at = DateTime.now();
 
   final ReportOutcomeKind kind;
-  final String? message;
+
+  /// Why it failed, translated at display time (`failure.message(isArabic)`).
+  final ReportFailure? failure;
+
+  /// Raw exception text for the log only; never shown to the user.
+  final String? debugDetail;
   final DateTime at;
 }
 
@@ -77,7 +83,7 @@ class ReportUploadQueue {
       debugPrint('❌ Could not save report photo: $e');
       lastOutcome.value = ReportOutcome(
         ReportOutcomeKind.failed,
-        message: 'Could not save photo: $e',
+        debugDetail: 'Could not save photo: $e',
       );
       return;
     }
@@ -110,7 +116,7 @@ class ReportUploadQueue {
         } catch (e) {
           debugPrint('❌ Report upload crashed: $e');
           lastOutcome.value =
-              ReportOutcome(ReportOutcomeKind.failed, message: '$e');
+              ReportOutcome(ReportOutcomeKind.failed, debugDetail: '$e');
         } finally {
           pending.value = pending.value - 1;
         }
@@ -150,10 +156,7 @@ class ReportUploadQueue {
         'time': stamp,
         'needsLocation': true,
       });
-      lastOutcome.value = ReportOutcome(
-        ReportOutcomeKind.noLocation,
-        message: 'Saved without location',
-      );
+      lastOutcome.value = ReportOutcome(ReportOutcomeKind.noLocation);
       return;
     }
 
@@ -177,7 +180,7 @@ class ReportUploadQueue {
       });
       lastOutcome.value = ReportOutcome(
         ReportOutcomeKind.savedOffline,
-        message: 'Upload timed out — saved offline',
+        debugDetail: 'Upload timed out: $e',
       );
       return;
     }
@@ -188,12 +191,14 @@ class ReportUploadQueue {
       } catch (_) {
         // Not important; the file is small.
       }
+      // submitReport already bumped ReportEvents, so the map and My Reports
+      // refetch on their own.
       lastOutcome.value = ReportOutcome(ReportOutcomeKind.sent);
     } else {
       // submitReport already queued it offline where appropriate.
       lastOutcome.value = ReportOutcome(
         ReportOutcomeKind.failed,
-        message: ApiService.lastReportError,
+        failure: ApiService.lastReportFailure,
       );
     }
   }
